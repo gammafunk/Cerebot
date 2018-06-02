@@ -34,6 +34,9 @@ _url_regexp = (r'(https?://(?:\S+(?::\S*)?@)?(?:(?:[1-9]\d?|1\d\d|2[01]\d|22'
 # object from the cache.
 _channel_idle_timeout = 90 * 60
 
+# How long we allow a chatter in a channel to be idle before we no longer
+# include them in the $chat variable.
+_chatter_idle_timeout = 60 * 60
 
 class DiscordSource(ChatWatcher):
     """The channel source object that handles chat for any kind of discord
@@ -45,12 +48,17 @@ class DiscordSource(ChatWatcher):
         super().__init__(*args, **kwargs)
 
         self.manager = manager
+
         # The discord channel object this source is tied to.
         self.channel = channel
         self.source_type_desc = "channel"
+
         # Time since any message was last seen in the channel, used for the
         # Discord manager cache of these objects.
         self.time_last_message = None
+
+        # Dict of recent chatters with users as keys and timestamp as values.
+        self.chatters = {}
 
     # Set to the bot only if we're in PM, otherwise None.
     @property
@@ -78,6 +86,21 @@ class DiscordSource(ChatWatcher):
 
     def get_dcss_nick(self, user):
         return self.get_chat_name(user, True)
+
+    def get_chat_dcss_nicks(self, sender):
+        """Return a set of dcss nicks for users where we have a nick
+        mapping."""
+
+        nicks = set()
+        for user in self.chatters:
+            if not self.is_allowed_user(user):
+                continue
+
+            nick = self.get_dcss_nick(user)
+            if nick:
+                nicks.add(nick)
+
+        return nicks
 
     def is_allowed_user(self, user):
         """Return true if the user is allowed to execute commands in the
@@ -183,6 +206,14 @@ class DiscordSource(ChatWatcher):
             raise BotCommandException(
                     "This command must be run in a public channel.")
 
+    def expire_idle_chatters(self, current_time):
+        """Remove any chatters from the list maintained for the $chat variable
+        if they've been idle in the channel too long."""
+
+        for c in list(self.chatters):
+            if current_time - self.chatters[c] >= _chatter_idle_timeout:
+                del self.chatters[c]
+
     @asyncio.coroutine
     def send_chat(self, message, message_type="normal"):
         """Clean up message output before sending it to chat."""
@@ -204,6 +235,16 @@ class DiscordSource(ChatWatcher):
             message = "]" + message
 
         yield from self.manager.send_message(self.channel, message)
+
+    @asyncio.coroutine
+    def read_chat(self, sender, content):
+        current_time = time.time()
+        if self.is_allowed_user(sender):
+            self.chatters[sender] = current_time
+
+        self.expire_idle_chatters(current_time)
+
+        yield from super().read_chat(sender, content)
 
 
 class DiscordManager(discord.Client):
