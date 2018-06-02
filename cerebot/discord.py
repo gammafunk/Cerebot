@@ -32,7 +32,7 @@ _url_regexp = (r'(https?://(?:\S+(?::\S*)?@)?(?:(?:[1-9]\d?|1\d\d|2[01]\d|22'
 
 # How long we allow inactivity in a channel before we remove its channel source
 # object from the cache.
-_channel_idle_timeout = 30 * 60
+_channel_idle_timeout = 90 * 60
 
 
 class DiscordSource(ChatWatcher):
