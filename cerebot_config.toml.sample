@@ -72,7 +72,7 @@ command_limit = 10
 command_period = 20
 
 # Send when users issue !<bot-name> or !help
-help_text = """I'm a chat bot that relays commands to the DCSS IRC knowledge bots Sequell, Gretell, and Cheibriados. Type `??beem` for a quick guide to commands for these bots. To see discord-specific bot commands, type `!listcommands`. For help with discord roles, type `??cerebot[2]`."""
+help_text = """I'm a chat bot that relays commands to the DCSS IRC knowledge bots Sequell, Gretell, and Cheibriados. Type `??beem` for a quick guide to commands for these bots. To see discord-specific bot commands, type `!listcommands`. For the original Sequell help command, use `!sequellhelp`. For help with discord roles, type `??cerebot[2]`."""
 
 # List of user IDs that are considered bot admins. These are allowed to run
 # admin-only bot commands and to target other users for these commands using
