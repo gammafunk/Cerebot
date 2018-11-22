@@ -38,10 +38,9 @@ nick = "Sequell"
 # These are regular expression patterns the bot accepts as prefixes to Sequell
 # commands in chat. A chat message must match one of these at to be forwarded
 # to Sequell.
-sequell_patterns = ['^\?\?', '(?i)^[qr]\?\?', '[^?]\?\?\?? *$', '^\?/',
-                    '^![-.\w]+( |$)', '^&[-.\w]+( |$)', '^\.[-.\w]+( |$)',
-                    '^=[-.\w]+( |$)', '(?i)^rip\b', '(?i)\bgong\b',
-                    '(?i)^cang$']
+sequell_patterns = ['^\?\?', '(?i)^[qr]\?\?', '[^?]\?\?\??\s*$', '^\?/',
+		    '^[!&.=][\S]+', '(?i)^rip\b', '(?i)\bgong\b', '(?i)^cang$',
+                    '^(?i)You die...']
 
 [[dcss.bots]]
 nick = "Gretell"
