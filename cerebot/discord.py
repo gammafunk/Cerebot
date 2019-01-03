@@ -81,6 +81,10 @@ class DiscordSource(ChatWatcher):
                     self.channel.name)
         return channel_name
 
+    def should_limit_sequell_lines(self, sender):
+        """We allow unlimited response lines for a single command in PM."""
+        return not self.channel.is_private
+
     def get_chat_name(self, user, sanitize=False):
         return super().get_chat_name(user.name, sanitize)
 
