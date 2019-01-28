@@ -503,7 +503,7 @@ def bot_listroles_command(source, user):
     if not roles:
         raise BotCommandException("No available roles found.")
 
-    yield from source.send_chat(', '.join(r.name for r in roles))
+    yield from source.send_chat(', '.join(sorted(r.name for r in roles)))
 
 @asyncio.coroutine
 def bot_addrole_command(source, user, rolename):
