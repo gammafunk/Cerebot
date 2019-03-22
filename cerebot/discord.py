@@ -180,7 +180,7 @@ class DiscordSource(ChatWatcher):
             # URLs parts will always be at an odd index. These are
             # unmodified. Remove markdown characters from non-urls parts.
             if not i % 2:
-                for c in "*_~|":
+                for c in "`*_~|":
                     p = p.replace(c, "\\" + c)
             result += p
 
