@@ -89,7 +89,13 @@ class DiscordSource(ChatWatcher):
         return super().get_chat_name(user.name, sanitize)
 
     def get_dcss_nick(self, user):
-        return self.get_chat_name(user, True)
+        """Return the nick we have mapped for a given user. If the user's name
+        has no valid characters, use their discord id instead."""
+        name = self.get_chat_name(user, True)
+        if not name:
+            name = user.id
+
+        return name
 
     def get_chat_dcss_nicks(self, sender):
         """Return a set of dcss nicks for users where we have a nick
