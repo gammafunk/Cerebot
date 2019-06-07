@@ -191,7 +191,7 @@ class DiscordSource(ChatWatcher):
         server = self.channel.server
         bot_role = None
         for r in server.roles:
-            if r.name == "Bot" and r in server.me.roles:
+            if r.name == "Bot Faction" and r in server.me.roles:
                 bot_role = r
                 break
 
