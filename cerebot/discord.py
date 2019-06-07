@@ -168,7 +168,48 @@ class DiscordSource(ChatWatcher):
                 and r.permissions == server.default_role.permissions):
                 roles.append(r)
 
+        # Remove any roles that are faction roles. These would end in
+        # ' Faction' and have a corresponding role without that suffix.
+        role_names = [r.name for r in roles]
+        faction_suff = " Faction"
+        for r in server.roles:
+            if (r in roles
+                and r.name.endswith(faction_suff)
+                and r.name[:-len(faction_suff)] in role_names):
+                roles.remove(r)
+
         return roles
+
+    def get_faction_roles(self):
+        """Find which faction roles are available on this server for use with
+        the !addfaction bot command."""
+
+        # We must be associated with a server.
+        if self.channel.is_private:
+            return
+
+        server = self.channel.server
+        bot_role = None
+        for r in server.roles:
+            if r.name == "Bot" and r in server.me.roles:
+                bot_role = r
+                break
+
+        if not bot_role:
+            return
+
+        roles = self.get_vanity_roles()
+        factions = []
+        role_names = [r.name for r in roles]
+        faction_suff = " Faction"
+        for r in server.roles:
+            if (r.position < bot_role.position
+                and r.name.endswith(faction_suff)
+                and r.name[:-len(faction_suff)] in role_names):
+
+                factions.append(r)
+
+        return factions
 
     def get_source_ident(self):
         """Get a unique identifier hash of the discord channel."""
@@ -557,6 +598,82 @@ def bot_removerole_command(source, user, rolename):
     raise BotCommandException("Unknown role: {}".format(rolename))
 
 @asyncio.coroutine
+def bot_listfactions_command(source, user):
+    """!listfactions chat command"""
+
+    factions = source.get_faction_roles()
+    if not factions:
+        raise BotCommandException("No available faction roles found.")
+
+    faction_suff = ' Faction'
+    yield from source.send_chat(', '.join(sorted(
+        f.name[:-len(faction_suff)] for f in factions)))
+
+@asyncio.coroutine
+def bot_addfaction_command(source, user, rolename):
+    """!addfaction chat command"""
+
+    factions = source.get_faction_roles()
+    if not factions:
+        raise BotCommandException("No available faction roles found.")
+
+    faction = None
+    role_lname = rolename.lower()
+    faction_suff = ' Faction'
+    to_remove = list()
+    for f in factions:
+        base_name = f.name[:-len(faction_suff)]
+        base_lname = base_name.lower()
+        if (base_lname == role_lname
+            or base_lname + faction_suff.lower() == role_lname):
+            faction = f
+
+            if faction in user.roles:
+                raise BotCommandException(
+                        "Member {} already has faction {}".format(user.name,
+                            base_name))
+
+        elif f in user.roles:
+            to_remove.append(f)
+
+    if not faction:
+        raise BotCommandException(
+                "Unknown faction: {}".format(rolename))
+
+    # First remove any existing faction roles we had.
+    print([f.name for f in to_remove])
+    if to_remove:
+        yield from source.manager.remove_roles(user, *to_remove)
+        yield from asyncio.sleep(0.5)
+
+    yield from source.manager.add_roles(user, faction)
+    yield from source.send_chat(
+            "Member {} has faction set to {}".format(user.name,
+                faction.name[:-len(faction_suff)]))
+
+    return
+
+@asyncio.coroutine
+def bot_removefaction_command(source, user):
+    """!removefaction chat command"""
+
+    factions = source.get_faction_roles()
+    to_remove = list()
+    for f in factions:
+        if f in user.roles:
+            to_remove.append(f)
+
+    if to_remove:
+        yield from source.manager.remove_roles(user, *to_remove)
+        yield from source.send_chat(
+                    "Member {} has lost faction {}".format(user.name,
+                        ", ".join([f.name for f in to_remove])))
+        return
+
+    raise BotCommandException("Member {} has no faction role".format(
+        user.name))
+
+@asyncio.coroutine
 def bot_glasses_command(source, user):
     """!glasses chat command"""
 
@@ -846,6 +963,25 @@ bot_commands = {
                 "required" : True
             } ],
         "function" : bot_removerole_command,
+    },
+    "removefaction" : {
+        "require_public_channel" : True,
+        "function" : bot_removefaction_command,
+    },
+    "listfactions" : {
+        "require_public_channel" : True,
+        "unlogged" : True,
+        "function" : bot_listfactions_command,
+    },
+    "addfaction" : {
+        "require_public_channel" : True,
+        "args" : [
+            {
+                "pattern" : r".+$",
+                "description" : "ROLE",
+                "required" : True
+            } ],
+        "function" : bot_addfaction_command,
     },
     "glasses" : {
         "require_public_channel" : True,
