@@ -2,7 +2,7 @@
 
 import asyncio
 if hasattr(asyncio, "async"):
-    ensure_future = asyncio.async
+    ensure_future = getattr(asyncio, "async")
 else:
     ensure_future = asyncio.ensure_future
 
