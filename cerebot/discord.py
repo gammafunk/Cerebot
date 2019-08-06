@@ -914,6 +914,57 @@ def bot_glaciate_command(source, user, target=None):
     yield from mgr.edit_message(message,
             '```{}```'.format('\n'.join(ice_lines)))
 
+@asyncio.coroutine
+def react_message(source, message, num):
+    emoji = [e for e in message.channel.server.emojis if not e.managed]
+    for i in range(0, num):
+        if not emoji:
+            return
+
+        ind = random.randint(0, len(emoji) - 1)
+        yield from source.manager.add_reaction(message, emoji[ind])
+
+        emoji.remove(emoji[ind])
+        yield from asyncio.sleep(0.25)
+
+@asyncio.coroutine
+def bot_reactstorm_command(source, user, target=None):
+    """!reactstorm chat command"""
+
+    if not source.channel.server.emojis:
+        return
+
+    if target:
+        target = source.get_user_by_name(target)
+        if not target:
+            return
+
+    max_hist = 10
+    reacts_left = 15
+    logs = yield from source.manager.logs_from(source.channel, limit=max_hist)
+    seen_command = False
+    for m in logs:
+        if target and m.author is target:
+            num_reacts = random.randint(8, reacts_left)
+            yield from react_message(source, m, num_reacts)
+            return
+
+        elif not target:
+            # Don't react to the command itself.
+            if (not seen_command
+                and m.author is user
+                and m.content.startswith("!reactstorm")):
+                seen_command = True
+                continue
+
+            num_reacts = random.randint(min(reacts_left, 5), reacts_left)
+            yield from react_message(source, m, num_reacts)
+
+            if reacts_left > 0:
+                reacts_left = reacts_left - num_reacts
+            else:
+                return
+
 # Discord bot commands
 bot_commands = {
     "listcommands" : {
@@ -1046,5 +1097,16 @@ bot_commands = {
                 "required" : False
             } ],
         "function" : bot_glaciate_command,
+    },
+    "reactstorm" : {
+        "require_public_channel" : True,
+        "unlogged" : True,
+        "args" : [
+            {
+                "pattern" : r".*",
+                "description" : "target",
+                "required" : False
+            } ],
+        "function" : bot_reactstorm_command,
     },
 }
