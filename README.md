@@ -21,7 +21,7 @@ event loop with concurrent tasks.
 
 The following are required:
 
-* Python 3.4 or later
+* Python 3.5 or later
 * asyncio module (3.4.3 tested)
 * irc module (13.1 tested)
 * pytoml module (0.1.5 tested)

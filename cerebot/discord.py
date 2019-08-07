@@ -265,8 +265,7 @@ class DiscordSource(ChatWatcher):
             if current_time - self.chatters[c] >= _chatter_idle_timeout:
                 del self.chatters[c]
 
-    @asyncio.coroutine
-    def send_chat(self, message, message_type="normal"):
+    async def send_chat(self, message, message_type="normal"):
         """Clean up message output before sending it to chat."""
 
         # Clean up any markdown we don't want.
@@ -285,17 +284,16 @@ class DiscordSource(ChatWatcher):
         elif self.message_needs_escape(message):
             message = "]" + message
 
-        yield from self.manager.send_message(self.channel, message)
+        await self.manager.send_message(self.channel, message)
 
-    @asyncio.coroutine
-    def read_chat(self, sender, content):
+    async def read_chat(self, sender, content):
         current_time = time.time()
         if self.is_allowed_user(sender):
             self.chatters[sender] = current_time
 
         self.expire_idle_chatters(current_time)
 
-        yield from super().read_chat(sender, content)
+        await super().read_chat(sender, content)
 
 
 class DiscordManager(discord.Client):
@@ -325,8 +323,7 @@ class DiscordManager(discord.Client):
         _log.error("".join(traceback.format_exception(
             exc_type, exc_value, exc_tb)))
 
-    @asyncio.coroutine
-    def start_ping(self):
+    async def start_ping(self):
         """Start a repeating 10 second ping task to help connection
         stability."""
 
@@ -335,7 +332,7 @@ class DiscordManager(discord.Client):
                 return
 
             try:
-                yield from self.ws.ping()
+                await self.ws.ping()
 
             except asyncio.CancelledError:
                 return
@@ -345,7 +342,7 @@ class DiscordManager(discord.Client):
                 ensure_future(self.disconnect())
                 return
 
-            yield from asyncio.sleep(10)
+            await asyncio.sleep(10)
 
     def get_channel_source(self, channel):
         """Get the source object of the given discord channel object."""
@@ -364,8 +361,7 @@ class DiscordManager(discord.Client):
             if current_time - c.time_last_message >= _channel_idle_timeout:
                 self.sources.remove(c)
 
-    @asyncio.coroutine
-    def on_message(self, message):
+    async def on_message(self, message):
         """Handle a Discord chat message."""
 
         if not self.is_logged_in:
@@ -386,17 +382,15 @@ class DiscordManager(discord.Client):
         if content.startswith("*?"):
             content = '@' + content[1:]
 
-        yield from source.read_chat(message.author, content)
+        await source.read_chat(message.author, content)
 
-    @asyncio.coroutine
-    def on_ready(self):
+    async def on_ready(self):
         """Handle anything that needs to be done only after Discord is fully
         connected and ready. Currently only needed by the ping task."""
 
         self.ping_task = ensure_future(self.start_ping())
 
-    @asyncio.coroutine
-    def on_member_update(self, before, after):
+    async def on_member_update(self, before, after):
         """Handle Discord member state changes. Currently only used to set a
         "streaming" role."""
 
@@ -414,12 +408,12 @@ class DiscordManager(discord.Client):
 
         if (after.game and after.game.type == 1
                 and streaming_role not in after.roles):
-            yield from self.add_roles(after, streaming_role)
+            await self.add_roles(after, streaming_role)
             _log.info("Gave user %s on server %s streaming role", after,
                     after.server)
         elif ((not after.game or after.game.type != 1)
                 and streaming_role in after.roles):
-            yield from self.remove_roles(after, streaming_role)
+            await self.remove_roles(after, streaming_role)
             _log.info("Removed streaming role for user %s on server %s", after,
                     after.server)
 
@@ -461,16 +455,14 @@ class DiscordManager(discord.Client):
 
         return False
 
-    @asyncio.coroutine
-    def start(self):
+    async def start(self):
         """Set the discord login token an connect, processing discord events
         indefinitely."""
 
-        yield from self.login(self.conf['token'])
-        yield from self.connect()
+        await self.login(self.conf['token'])
+        await self.connect()
 
-    @asyncio.coroutine
-    def disconnect(self, shutdown=False):
+    async def disconnect(self, shutdown=False):
         """Disconnect from Discord. This will log any disconnection error, but
         never raise."""
 
@@ -481,7 +473,7 @@ class DiscordManager(discord.Client):
             return
 
         try:
-            yield from self.close()
+            await self.close()
 
         except Exception:
             self.log_exception("Error when disconnecting")
@@ -489,8 +481,7 @@ class DiscordManager(discord.Client):
         self.shutdown = shutdown
 
 
-@asyncio.coroutine
-def bot_listcommands_command(source, user):
+async def bot_listcommands_command(source, user):
     """!listcommands chat command"""
 
     commands = []
@@ -504,11 +495,10 @@ def bot_listcommands_command(source, user):
         commands.append(source.bot_command_prefix + com)
 
     commands.sort()
-    yield from source.send_chat("Available commands: {}".format(
+    await source.send_chat("Available commands: {}".format(
         ', '.join(commands)))
 
-@asyncio.coroutine
-def bot_botstatus_command(source, user):
+async def bot_botstatus_command(source, user):
     """!botstatus chat command"""
 
     mgr = source.manager
@@ -521,15 +511,14 @@ def bot_botstatus_command(source, user):
     names.sort()
     report = "Version: {}; Listening to servers: {}".format(Version,
             ", ".join(names))
-    yield from source.send_chat(report)
+    await source.send_chat(report)
 
-@asyncio.coroutine
-def bot_debugmode_command(source, user, state=None):
+async def bot_debugmode_command(source, user, state=None):
     """!debugmode chat command"""
 
     state_desc = "on" if _log.isEnabledFor(logging.DEBUG) else "off"
     if state is None:
-        yield from source.send_chat(
+        await source.send_chat(
                 "DEBUG level logging is currently {}.".format(state_desc))
         return
 
@@ -540,20 +529,18 @@ def bot_debugmode_command(source, user, state=None):
     state_val = "DEBUG" if state == "on" else "INFO"
     _log.setLevel(state_val)
 
-    yield from source.send_chat("DEBUG level logging set to {}.".format(state))
+    await source.send_chat("DEBUG level logging set to {}.".format(state))
 
-@asyncio.coroutine
-def bot_listroles_command(source, user):
+async def bot_listroles_command(source, user):
     """!listroles chat command"""
 
     roles = source.get_vanity_roles()
     if not roles:
         raise BotCommandException("No available roles found.")
 
-    yield from source.send_chat(', '.join(sorted(r.name for r in roles)))
+    await source.send_chat(', '.join(sorted(r.name for r in roles)))
 
-@asyncio.coroutine
-def bot_addrole_command(source, user, rolename):
+async def bot_addrole_command(source, user, rolename):
     """!addrole chat command"""
 
     roles = source.get_vanity_roles()
@@ -569,15 +556,14 @@ def bot_addrole_command(source, user, rolename):
                     "Member {} already has role {}".format(user.name,
                         rolename))
 
-        yield from source.manager.add_roles(user, r)
-        yield from source.send_chat(
+        await source.manager.add_roles(user, r)
+        await source.send_chat(
                 "Member {} has been given role {}".format(user.name, rolename))
         return
 
     raise BotCommandException("Unknown role: {}".format(rolename))
 
-@asyncio.coroutine
-def bot_removerole_command(source, user, rolename):
+async def bot_removerole_command(source, user, rolename):
     """!removerole chat command"""
 
     roles = source.get_vanity_roles()
@@ -590,15 +576,14 @@ def bot_removerole_command(source, user, rolename):
                     "Member {} does not have role {}".format(user.name,
                         rolename))
 
-        yield from source.manager.remove_roles(user, r)
-        yield from source.send_chat(
+        await source.manager.remove_roles(user, r)
+        await source.send_chat(
                 "Member {} has lost role {}".format(user.name, rolename))
         return
 
     raise BotCommandException("Unknown role: {}".format(rolename))
 
-@asyncio.coroutine
-def bot_listfactions_command(source, user):
+async def bot_listfactions_command(source, user):
     """!listfactions chat command"""
 
     factions = source.get_faction_roles()
@@ -606,11 +591,10 @@ def bot_listfactions_command(source, user):
         raise BotCommandException("No available faction roles found.")
 
     faction_suff = ' Faction'
-    yield from source.send_chat(', '.join(sorted(
+    await source.send_chat(', '.join(sorted(
         f.name[:-len(faction_suff)] for f in factions)))
 
-@asyncio.coroutine
-def bot_addfaction_command(source, user, rolename):
+async def bot_addfaction_command(source, user, rolename):
     """!addfaction chat command"""
 
     factions = source.get_faction_roles()
@@ -643,18 +627,17 @@ def bot_addfaction_command(source, user, rolename):
     # First remove any existing faction roles we had.
     print([f.name for f in to_remove])
     if to_remove:
-        yield from source.manager.remove_roles(user, *to_remove)
-        yield from asyncio.sleep(0.5)
+        await source.manager.remove_roles(user, *to_remove)
+        await asyncio.sleep(0.5)
 
-    yield from source.manager.add_roles(user, faction)
-    yield from source.send_chat(
+    await source.manager.add_roles(user, faction)
+    await source.send_chat(
             "Member {} has faction set to {}".format(user.name,
                 faction.name[:-len(faction_suff)]))
 
     return
 
-@asyncio.coroutine
-def bot_removefaction_command(source, user):
+async def bot_removefaction_command(source, user):
     """!removefaction chat command"""
 
     factions = source.get_faction_roles()
@@ -664,8 +647,8 @@ def bot_removefaction_command(source, user):
             to_remove.append(f)
 
     if to_remove:
-        yield from source.manager.remove_roles(user, *to_remove)
-        yield from source.send_chat(
+        await source.manager.remove_roles(user, *to_remove)
+        await source.send_chat(
                     "Member {} has lost faction {}".format(user.name,
                         ", ".join([f.name for f in to_remove])))
         return
@@ -673,18 +656,16 @@ def bot_removefaction_command(source, user):
     raise BotCommandException("Member {} has no faction role".format(
         user.name))
 
-@asyncio.coroutine
-def bot_glasses_command(source, user):
+async def bot_glasses_command(source, user):
     """!glasses chat command"""
 
-    message = yield from source.manager.send_message(source.channel, '( •_•)')
-    yield from asyncio.sleep(0.5)
-    yield from source.manager.edit_message(message, '( •_•)>⌐■-■')
-    yield from asyncio.sleep(0.5)
-    yield from source.manager.edit_message(message, '(⌐■_■)')
+    message = await source.manager.send_message(source.channel, '( •_•)')
+    await asyncio.sleep(0.5)
+    await source.manager.edit_message(message, '( •_•)>⌐■-■')
+    await asyncio.sleep(0.5)
+    await source.manager.edit_message(message, '(⌐■_■)')
 
-@asyncio.coroutine
-def bot_deal_command(source, user):
+async def bot_deal_command(source, user):
     """!deal chat command"""
 
     glasses = '    ⌐■-■    '
@@ -695,52 +676,49 @@ def bot_deal_command(source, user):
              '            ',
              '    (•_•)   ']
     mgr = source.manager
-    message = yield from mgr.send_message(source.channel,
+    message = await mgr.send_message(source.channel,
             '```{}```'.format('\n'.join(lines)))
-    yield from asyncio.sleep(0.5)
+    await asyncio.sleep(0.5)
 
     for i in range(3):
-        yield from mgr.edit_message(message, '```{}```'.format(
+        await mgr.edit_message(message, '```{}```'.format(
             '\n'.join(lines[:i] + [glasses]+lines[i + 1:])))
-        yield from asyncio.sleep(0.5)
+        await asyncio.sleep(0.5)
 
-    yield from mgr.edit_message(message, '```{}```'.format(
+    await mgr.edit_message(message, '```{}```'.format(
         '\n'.join(lines[:1] + [dealwith] + lines[2:3] + [glasson])))
 
-@asyncio.coroutine
-def bot_dance_command(source, user):
+async def bot_dance_command(source, user):
     """!dance chat command"""
 
     mgr = source.manager
     figures = [':D|-<', ':D/-<', ':D|-<', r':D\\-<']
-    message = yield from mgr.send_message(source.channel, figures[0])
-    yield from asyncio.sleep(0.25)
+    message = await mgr.send_message(source.channel, figures[0])
+    await asyncio.sleep(0.25)
 
     for n in range(2):
         for f in figures[0 if n else 1:]:
-            yield from mgr.edit_message(message, f)
-            yield from asyncio.sleep(0.25)
+            await mgr.edit_message(message, f)
+            await asyncio.sleep(0.25)
 
-    yield from mgr.edit_message(message, figures[0])
+    await mgr.edit_message(message, figures[0])
 
-@asyncio.coroutine
-def bot_botdance_command(source, user):
+async def bot_botdance_command(source, user):
     """!botdance chat command"""
 
     mgr = source.manager
     figures = ['└[^_^]┐', '┌[^_^]┘']
-    message = yield from mgr.send_message(source.channel, figures[0])
-    yield from asyncio.sleep(0.25)
+    message = await mgr.send_message(source.channel, figures[0])
+    await asyncio.sleep(0.25)
 
     for n in range(2):
         for f in figures[0 if n else 1:]:
-            yield from mgr.edit_message(message, f)
-            yield from asyncio.sleep(0.25)
+            await mgr.edit_message(message, f)
+            await asyncio.sleep(0.25)
 
-    yield from mgr.edit_message(message, figures[0])
+    await mgr.edit_message(message, figures[0])
 
-@asyncio.coroutine
-def bot_say_command(source, user, server, channel, message):
+async def bot_say_command(source, user, server, channel, message):
     """!say chat command"""
 
     mgr = source.manager
@@ -775,7 +753,7 @@ def bot_say_command(source, user, server, channel, message):
                 "match one of: {}".format(channel,
                     ", ".join(sorted([c.name for c in channels]))))
 
-    yield from mgr.send_message(dest_channel, message)
+    await mgr.send_message(dest_channel, message)
 
 def center_string_in_line(string, line):
    leftn = int((len(line) - len(string))/2)
@@ -796,8 +774,7 @@ def render_firestorm_explosion(lines, radius):
 
     return newlines
 
-@asyncio.coroutine
-def bot_firestorm_command(source, user, target=None):
+async def bot_firestorm_command(source, user, target=None):
     """!firestorm chat command"""
 
     if not target:
@@ -825,17 +802,17 @@ def bot_firestorm_command(source, user, target=None):
     mid = int(len(floor_lines) / 2)
     floor_lines[mid] = center_string_in_line(target, floor_lines[mid])
 
-    message = yield from mgr.send_message(source.channel,
+    message = await mgr.send_message(source.channel,
             '```{}```'.format('\n'.join(floor_lines)))
-    yield from asyncio.sleep(1)
+    await asyncio.sleep(1)
 
     for r in range(1, 5, 2):
         explosion = render_firestorm_explosion(floor_lines, r)
-        message = yield from mgr.edit_message(message,
+        message = await mgr.edit_message(message,
              '```{}```'.format('\n'.join(explosion)))
-        yield from asyncio.sleep(0.2)
+        await asyncio.sleep(0.2)
 
-    yield from asyncio.sleep(0.6)
+    await asyncio.sleep(0.6)
     fire_lines[mid] = center_string_in_line(target, fire_lines[mid])
     for i in range(0, 3):
         lines = list(fire_lines)
@@ -848,9 +825,9 @@ def bot_firestorm_command(source, user, target=None):
             for c in coords:
                 lines[n] = lines[n][:4 + c] + 'v' + lines[n][4 + c + 1:]
 
-        yield from mgr.edit_message(message,
+        await mgr.edit_message(message,
                 '```{}```'.format('\n'.join(lines)))
-        yield from asyncio.sleep(0.8)
+        await asyncio.sleep(0.8)
 
 def render_glaciate_explosion(lines, radius):
     newlines = list(lines)
@@ -863,8 +840,7 @@ def render_glaciate_explosion(lines, radius):
 
     return newlines
 
-@asyncio.coroutine
-def bot_glaciate_command(source, user, target=None):
+async def bot_glaciate_command(source, user, target=None):
     """!glaciate chat command"""
 
     if not target:
@@ -892,15 +868,15 @@ def bot_glaciate_command(source, user, target=None):
     mid = int(len(floor_lines) / 2)
     floor_lines[mid] = center_string_in_line(target, floor_lines[mid])
 
-    message = yield from mgr.send_message(source.channel,
+    message = await mgr.send_message(source.channel,
             '```{}```'.format('\n'.join(floor_lines)))
-    yield from asyncio.sleep(1)
+    await asyncio.sleep(1)
 
     for r in range(1, 8, 2):
         explosion = render_glaciate_explosion(floor_lines, r)
-        message = yield from mgr.edit_message(message,
+        message = await mgr.edit_message(message,
              '```{}```'.format('\n'.join(explosion)))
-        yield from asyncio.sleep(0.2)
+        await asyncio.sleep(0.2)
 
     blasted = target
     if len(target) > 1:
@@ -911,24 +887,22 @@ def bot_glaciate_command(source, user, target=None):
             blasted = blasted[:c] + '8' + blasted[c + 1:]
 
     ice_lines[mid] = center_string_in_line(blasted, ice_lines[mid])
-    yield from mgr.edit_message(message,
+    await mgr.edit_message(message,
             '```{}```'.format('\n'.join(ice_lines)))
 
-@asyncio.coroutine
-def react_message(source, message, num):
+async def react_message(source, message, num):
     emoji = [e for e in message.channel.server.emojis if not e.managed]
     for i in range(0, num):
         if not emoji:
             return
 
         ind = random.randint(0, len(emoji) - 1)
-        yield from source.manager.add_reaction(message, emoji[ind])
+        await source.manager.add_reaction(message, emoji[ind])
 
         emoji.remove(emoji[ind])
-        yield from asyncio.sleep(0.25)
+        await asyncio.sleep(0.25)
 
-@asyncio.coroutine
-def bot_reactstorm_command(source, user, target=None):
+async def bot_reactstorm_command(source, user, target=None):
     """!reactstorm chat command"""
 
     if not source.channel.server.emojis:
@@ -941,12 +915,12 @@ def bot_reactstorm_command(source, user, target=None):
 
     max_hist = 10
     reacts_left = 15
-    logs = yield from source.manager.logs_from(source.channel, limit=max_hist)
+    logs = await source.manager.logs_from(source.channel, limit=max_hist)
     seen_command = False
     for m in logs:
         if target and m.author is target:
             num_reacts = random.randint(8, reacts_left)
-            yield from react_message(source, m, num_reacts)
+            await react_message(source, m, num_reacts)
             return
 
         elif not target:
@@ -958,7 +932,7 @@ def bot_reactstorm_command(source, user, target=None):
                 continue
 
             num_reacts = random.randint(min(reacts_left, 5), reacts_left)
-            yield from react_message(source, m, num_reacts)
+            await react_message(source, m, num_reacts)
 
             if reacts_left > 0:
                 reacts_left = reacts_left - num_reacts

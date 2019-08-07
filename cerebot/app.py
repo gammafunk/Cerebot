@@ -6,13 +6,7 @@ knowledge bots for DCSS.
 """
 
 import argparse
-
 import asyncio
-if hasattr(asyncio, "async"):
-    ensure_future = getattr(asyncio, "async")
-else:
-    ensure_future = asyncio.ensure_future
-
 import functools
 import logging
 import os
@@ -105,13 +99,12 @@ class Cerebot:
             self.dcss_task.cancel()
 
         if self.discord_task and not self.discord_task.done():
-            ensure_future(self.discord_manager.disconnect(True))
+            asyncio.ensure_future(self.discord_manager.disconnect(True))
 
-    @asyncio.coroutine
-    def process(self):
+    async def process(self):
 
         # This task is never restarted.
-        self.dcss_task = ensure_future(self.dcss_manager.start())
+        self.dcss_task = asyncio.ensure_future(self.dcss_manager.start())
 
         while True:
 
@@ -119,20 +112,21 @@ class Cerebot:
             if not self.discord_manager or not self.discord_manager.shutdown:
                 # Let the current task finish.
                 if self.discord_task and not self.discord_task.done():
-                    yield from self.discord_task
+                    await self.discord_task
 
                 # We re-instantiate the manager and create a new websocket.
                 self.discord_manager = DiscordManager(self.conf.discord,
                                                       self.dcss_manager)
-                self.discord_task = ensure_future(self.discord_manager.start())
+                self.discord_task = asyncio.ensure_future(
+                        self.discord_manager.start())
 
-            yield from asyncio.wait([self.dcss_task, self.discord_task],
+            await asyncio.wait([self.dcss_task, self.discord_task],
                     return_when=asyncio.FIRST_COMPLETED)
 
             # We are shutting down the bot.
             if self.dcss_task.done():
                 if self.discord_task and not self.discord_task.done():
-                    yield from self.discord_task
+                    await self.discord_task
                 return
 
 def main():
