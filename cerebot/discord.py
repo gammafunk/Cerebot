@@ -358,8 +358,26 @@ class DiscordManager(discord.Client):
         for too long."""
 
         for c in list(self.sources):
+            if not c.time_last_message:
+                continue
+
             if current_time - c.time_last_message >= _channel_idle_timeout:
                 self.sources.remove(c)
+
+    def filter_content(self, content):
+        # Make '*?' an alias to '@?' in Discord to avoid making mentions.
+        if content.startswith("*?"):
+            content = '@' + content[1:]
+
+        return content
+
+    def make_channel_source(self, channel):
+        source = self.get_channel_source(channel)
+        if not source:
+            source = DiscordSource(self, channel)
+            self.sources.add(source)
+
+        return source
 
     async def on_message(self, message):
         """Handle a Discord chat message."""
@@ -370,18 +388,10 @@ class DiscordManager(discord.Client):
         current_time = time.time()
         self.expire_idle_channels(current_time)
 
-        source = self.get_channel_source(message.channel)
-        if not source:
-            source = DiscordSource(self, message.channel)
-            self.sources.add(source)
-
+        source = self.make_channel_source(message.channel)
         source.time_last_message = current_time
 
-        # Make '*?' an alias to '@?' in Discord to avoid making mentions.
-        content = message.content
-        if content.startswith("*?"):
-            content = '@' + content[1:]
-
+        content = self.filter_content(message.content)
         await source.read_chat(message.author, content)
 
     async def on_ready(self):
@@ -915,9 +925,8 @@ async def bot_reactstorm_command(source, user, target=None):
 
     max_hist = 10
     reacts_left = 15
-    logs = await source.manager.logs_from(source.channel, limit=max_hist)
     seen_command = False
-    for m in logs:
+    async for m in source.manager.logs_from(source.channel, limit=max_hist):
         if target and m.author is target:
             num_reacts = random.randint(8, reacts_left)
             await react_message(source, m, num_reacts)
@@ -938,6 +947,45 @@ async def bot_reactstorm_command(source, user, target=None):
                 reacts_left = reacts_left - num_reacts
             else:
                 return
+
+async def bot_relay_command(source, user, server, channel, message):
+    """!relay chat command"""
+
+    mgr = source.manager
+    dest_server = None
+    for s in mgr.servers:
+        # Give exact matches priority
+        if server.lower() == s.name.lower():
+            dest_server = s
+            break
+
+        if server.lower() in s.name.lower():
+            dest_server = s
+
+    if not dest_server:
+        raise BotCommandException("Can't find server match for {}, must "
+                "match one of: {}".format(server, ", ".join(
+                    sorted([s.name for s in mgr.servers]))))
+
+    dest_channel = None
+    chan_filt = lambda c: c.type == discord.ChannelType.text
+    channels = list(filter(chan_filt, dest_server.channels))
+    for c in channels:
+        if channel.lower() == c.name.lower():
+            dest_channel = c
+            break
+
+        elif channel.lower() in c.name.lower():
+            dest_channel = c
+
+    if not dest_channel:
+        raise BotCommandException("Can't find channel match for {}, must "
+                "match one of: {}".format(channel,
+                    ", ".join(sorted([c.name for c in channels]))))
+
+    dest_source = mgr.make_channel_source(dest_channel)
+    content = mgr.filter_content(message)
+    await dest_source.read_chat(user, content)
 
 # Discord bot commands
 bot_commands = {
@@ -1082,5 +1130,25 @@ bot_commands = {
                 "required" : False
             } ],
         "function" : bot_reactstorm_command,
+    },
+    "relay" : {
+        "require_admin" : True,
+        "args" : [
+            {
+                "pattern" : r".+$",
+                "description" : "SERVER",
+                "required" : True
+            },
+            {
+                "pattern" : r".+$",
+                "description" : "CHANNEL",
+                "required" : True
+            },
+            {
+                "pattern" : r".+$",
+                "description" : "MESSAGE",
+                "required" : True
+            } ],
+        "function" : bot_relay_command,
     },
 }
