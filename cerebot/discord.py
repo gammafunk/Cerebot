@@ -987,6 +987,56 @@ async def bot_relay_command(source, user, server, channel, message):
     content = mgr.filter_content(message)
     await dest_source.read_chat(user, content)
 
+@asyncio.coroutine
+def bot_pregen_command(source, user, target=None):
+    """!pregen chat command"""
+
+    mgr = source.manager
+    memes = ['elves', 'tentacles', 'free beer', 'optimal play',
+            'Guaranteed Damage Reduction', 'dragon scales', 'Mephitic Cloud',
+            "Borgnjor's Vile Clutch", 'casters', 'sword-and-board melee toons', 'forks',
+            'wiki guides', 'crabs', 'crawlcode', 'Cheibriados', 'Xom',
+            'Qazlal', 'Beogh', 'Sif Muna', 'Pakellas',
+            'the Crown of Eternal Torment', 'purple chunks', 'bloatcrawl',
+            "that's BANANAS", 'mikee teleport', 'splatratios', 'winrate', 'high scores',
+            'ghost vaults', 'transporter vaults', 'runed doors', 'role playing', 'traps',
+            ]
+
+    if not target:
+        target = '#dcss'
+
+    header = 'Generating {}...\n '.format(target)
+    footer = None
+    footer_delay = 0
+    message = None
+    for i in range(1, 16):
+        if i % 2 == 1:
+            widget = '/o/'
+        else:
+            widget = '\\o\\'
+
+        prefix = ' ' * (i - 1)
+        suffix = ' ' * (12 - i)
+
+        if not footer:
+            footer = '\n building {}   '.format(random.sample(memes, 1)[0])
+            footer_delay = 2
+        else:
+            footer_delay = footer_delay - 1
+
+        content = '```{}\n{}{}{}\n{}```'.format(header, prefix, widget, suffix,
+                footer)
+
+        if not message:
+            message = yield from mgr.send_message(source.channel, content)
+        else:
+            message = yield from mgr.edit_message(message, content)
+
+        if footer_delay <= 0:
+            footer = None
+
+        yield from asyncio.sleep(0.33)
+
 # Discord bot commands
 bot_commands = {
     "listcommands" : {
@@ -1150,5 +1200,16 @@ bot_commands = {
                 "required" : True
             } ],
         "function" : bot_relay_command,
+    },
+    "pregen" : {
+        "require_public_channel" : True,
+        "unlogged" : True,
+        "args" : [
+            {
+                "pattern" : r".*",
+                "description" : "target",
+                "required" : False
+            } ],
+        "function" : bot_pregen_command,
     },
 }
