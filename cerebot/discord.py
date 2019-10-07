@@ -1037,6 +1037,38 @@ def bot_pregen_command(source, user, target=None):
 
         yield from asyncio.sleep(0.33)
 
+async def bot_reactbomb_command(source, user, emote=None):
+    """!reactbomb chat command"""
+
+    if not emote:
+        emote = random.choice([e for e in source.channel.server.emojis
+                               if not e.managed])
+    else:
+        for e in source.channel.server.emojis:
+            if e.name == emote:
+                emote = e
+                break
+
+    max_hist = 10
+    logs = await source.manager.logs_from(source.channel, limit=max_hist)
+    seen_command = False
+    reacts_left = random.randint(5, max_hist)
+    for m in logs:
+        # Don't react to the command itself.
+        if (not seen_command
+            and m.author is user
+            and m.content.startswith("!reactbomb")):
+            seen_command = True
+            continue
+
+        if reacts_left > 0:
+            reacts_left = reacts_left - 1
+        else:
+            return
+
+        await source.manager.add_reaction(m, emote)
+        await asyncio.sleep(0.25)
+
 # Discord bot commands
 bot_commands = {
     "listcommands" : {
@@ -1211,5 +1243,16 @@ bot_commands = {
                 "required" : False
             } ],
         "function" : bot_pregen_command,
+    },
+    "reactbomb" : {
+        "require_public_channel" : True,
+        "unlogged" : True,
+        "args" : [
+            {
+                "pattern" : r".*",
+                "description" : "emote",
+                "required" : False
+            } ],
+        "function" : bot_reactbomb_command,
     },
 }
