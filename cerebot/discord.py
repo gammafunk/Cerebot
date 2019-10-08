@@ -1203,6 +1203,7 @@ bot_commands = {
         "function" : bot_glaciate_command,
     },
     "reactstorm" : {
+        "require_admin" : True,
         "require_public_channel" : True,
         "unlogged" : True,
         "args" : [
@@ -1245,6 +1246,7 @@ bot_commands = {
         "function" : bot_pregen_command,
     },
     "reactbomb" : {
+        "require_admin" : True,
         "require_public_channel" : True,
         "unlogged" : True,
         "args" : [
