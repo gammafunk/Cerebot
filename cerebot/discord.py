@@ -224,9 +224,12 @@ class DiscordSource(ChatWatcher):
         parts = re.split(_url_regexp, message)
         result = ""
         for i, p in enumerate(parts):
-            # URLs parts will always be at an odd index. These are
-            # unmodified. Remove markdown characters from non-urls parts.
-            if not i % 2:
+            # URLs parts are at odd indices. Place angle brackes around these
+            # to disable discord preview.
+            if i % 2:
+                p = '<' + p + '>'
+            # Remove markdown characters from non-url parts.
+            else:
                 for c in "`*_~|":
                     p = p.replace(c, "\\" + c)
             result += p
