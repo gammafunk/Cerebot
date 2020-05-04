@@ -768,15 +768,26 @@ async def bot_say_command(source, user, guild, channel, message):
     await dest_channel.send(message)
 
 def center_string_in_line(string, line):
-   leftn = int((len(line) - len(string))/2)
-   if len(string) % 2 == 0:
-       leftn += 1
+    len_line = len(line)
+    len_str = len(string)
 
-   rightn = int((len(string) - len(line))/2)
-   if len(string) >= len(line):
-       return string[rightn:leftn]
-   else:
-       return "{}{}{}".format(line[0:leftn], string, line[rightn:])
+    if len_str >= len_line:
+        num_trim = len_str - len_line
+        start =  int(num_trim / 2)
+
+        end = len_str - start
+        if num_trim % 2:
+            end -= 1
+
+        return string[start:end]
+
+    line_keep = len_line - len_str
+    left_end = int(line_keep / 2)
+    right_start = len_line - left_end
+    if line_keep % 2:
+       left_end += 1
+
+    return "{}{}{}".format(line[0:left_end], string, line[right_start:])
 
 def render_firestorm_explosion(lines, radius):
     newlines = list(lines)
