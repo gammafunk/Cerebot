@@ -1,11 +1,6 @@
 """Creating and managing the Discord connection."""
 
 import asyncio
-if hasattr(asyncio, "async"):
-    ensure_future = getattr(asyncio, "async")
-else:
-    ensure_future = asyncio.ensure_future
-
 import discord
 import logging
 import os
@@ -350,7 +345,7 @@ class DiscordManager(discord.Client):
 
             except Exception:
                 self.log_exception("Unable to send ping")
-                ensure_future(self.disconnect())
+                asyncio.ensure_future(self.disconnect())
                 return
 
             await asyncio.sleep(10)
@@ -402,7 +397,7 @@ class DiscordManager(discord.Client):
         """Handle anything that needs to be done only after Discord is fully
         connected and ready. Currently only needed by the ping task."""
 
-        self.ping_task = ensure_future(self.start_ping())
+        self.ping_task = asyncio.ensure_future(self.start_ping())
 
     async def on_member_update(self, before, after):
         """Handle Discord member state changes. Currently only used to set a
