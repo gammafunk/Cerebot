@@ -234,8 +234,7 @@ class DiscordSource(ChatWatcher):
                 p = '<' + p + '>'
             # Remove markdown characters from non-url parts.
             else:
-                for c in "`*_~|":
-                    p = p.replace(c, "\\" + c)
+                p = discord.utils.escape_markdown(p)
             result += p
 
         return result
@@ -281,7 +280,7 @@ class DiscordSource(ChatWatcher):
             message = message.replace('```', r'\`\`\`')
         else:
             message = self.filter_markdown(message)
-            message = self.filter_mentions(message)
+            message = discord.utils.escape_mentions(message)
 
         if message_type == "action":
             message = '_' + message + '_'
