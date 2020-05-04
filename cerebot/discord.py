@@ -63,7 +63,7 @@ class DiscordSource(ChatWatcher):
     # Set to the bot only if we're in PM, otherwise None.
     @property
     def user(self):
-        if self.channel.is_private:
+        if isinstance(self.channel, discord.abc.PrivateChannel):
             return self.login_user
         else:
             return None
@@ -74,16 +74,16 @@ class DiscordSource(ChatWatcher):
 
     def describe(self):
         channel_name = None
-        if self.channel.is_private or not self.channel.name:
+        if isinstance(self.channel, discord.abc.PrivateChannel):
             channel_name = 'PM:{}'.format(self.channel.id)
         else:
-            channel_name = '{}:#{}'.format(self.channel.server.name,
+            channel_name = '{}:#{}'.format(self.channel.guild.name,
                     self.channel.name)
         return channel_name
 
     def should_limit_sequell_lines(self, sender):
         """We allow unlimited response lines for a single command in PM."""
-        return not self.channel.is_private
+        return isinstance(self.channel, discord.abc.GuildChannel)
 
     def get_chat_name(self, user, sanitize=False):
         return super().get_chat_name(user.name, sanitize)
@@ -93,7 +93,7 @@ class DiscordSource(ChatWatcher):
         has no valid characters, use their discord id instead."""
         name = self.get_chat_name(user, True)
         if not name:
-            name = user.id
+            name = str(user.id)
 
         return name
 
@@ -126,34 +126,34 @@ class DiscordSource(ChatWatcher):
 
     def get_user_by_name(self, name):
         is_id = name.isdigit()
-        if self.channel.is_private:
-            for s in self.manager.servers:
+        if isinstance(self.channel, discord.abc.PrivateChannel):
+            for g in self.manager.guilds:
                 if is_id:
-                    member = s.get_member(name)
+                    member = g.get_member(int(name))
                 else:
-                    member = s.get_member_named(name)
+                    member = g.get_member_named(name)
 
                 if member:
                     return member
 
         else:
             if is_id:
-                return self.channel.server.get_member(name)
+                return self.channel.guild.get_member(int(name))
             else:
-                return self.channel.server.get_member_named(name)
+                return self.channel.guild.get_member_named(name)
 
     def get_vanity_roles(self):
-        """Find which vanity roles are available on this server for use with
-        the !addrole bot command."""
+        """Find which vanity roles are available on this guild for use with the
+        !addrole bot command."""
 
-        # We must be associated with a server.
-        if self.channel.is_private:
+        # We must be associated with a guild.
+        if isinstance(self.channel, discord.abc.PrivateChannel):
             return
 
-        server = self.channel.server
+        guild = self.channel.guild
         bot_role = None
-        for r in server.roles:
-            if r.name == "Bot" and r in server.me.roles:
+        for r in guild.roles:
+            if r.name == "Bot" and r in guild.me.roles:
                 bot_role = r
                 break
 
@@ -161,18 +161,22 @@ class DiscordSource(ChatWatcher):
             return
 
         roles = []
-        for r in server.roles:
-            # Only give roles with default permissions.
+        for r in guild.roles:
             if (r.position < bot_role.position
-                and not r.is_everyone
-                and r.permissions == server.default_role.permissions):
+                # Don't want the everyone role
+                and r is not guild.default_role
+                # Don't want e.g. Twitch subscriber roles
+                and not r.managed
+                # We want only roles that have default role permissions, since
+                # these are meant for users.
+                and r.permissions == guild.default_role.permissions):
                 roles.append(r)
 
         # Remove any roles that are faction roles. These would end in
         # ' Faction' and have a corresponding role without that suffix.
         role_names = [r.name for r in roles]
         faction_suff = " Faction"
-        for r in server.roles:
+        for r in guild.roles:
             if (r in roles
                 and r.name.endswith(faction_suff)
                 and r.name[:-len(faction_suff)] in role_names):
@@ -181,17 +185,17 @@ class DiscordSource(ChatWatcher):
         return roles
 
     def get_faction_roles(self):
-        """Find which faction roles are available on this server for use with
+        """Find which faction roles are available on this guild for use with
         the !addfaction bot command."""
 
-        # We must be associated with a server.
-        if self.channel.is_private:
+        # We must be associated with a guild.
+        if isinstance(self.channel, discord.abc.PrivateChannel):
             return
 
-        server = self.channel.server
+        guild = self.channel.guild
         bot_role = None
-        for r in server.roles:
-            if r.name == "Bot Faction" and r in server.me.roles:
+        for r in guild.roles:
+            if r.name == "Bot Faction" and r in guild.me.roles:
                 bot_role = r
                 break
 
@@ -202,7 +206,7 @@ class DiscordSource(ChatWatcher):
         factions = []
         role_names = [r.name for r in roles]
         faction_suff = " Faction"
-        for r in server.roles:
+        for r in guild.roles:
             if (r.position < bot_role.position
                 and r.name.endswith(faction_suff)
                 and r.name[:-len(faction_suff)] in role_names):
@@ -256,7 +260,8 @@ class DiscordSource(ChatWatcher):
         if self.manager.user_is_admin(user):
             return
 
-        if entry.get("require_public_channel") and self.channel.is_private:
+        if (entry.get("require_public_channel")
+                and isinstance(self.channel, discord.abc.PrivateChannel)):
             raise BotCommandException(
                     "This command must be run in a public channel.")
 
@@ -287,7 +292,7 @@ class DiscordSource(ChatWatcher):
         elif self.message_needs_escape(message):
             message = "]" + message
 
-        await self.manager.send_message(self.channel, message)
+        await self.channel.send(message)
 
     async def read_chat(self, sender, content):
         current_time = time.time()
@@ -295,6 +300,10 @@ class DiscordSource(ChatWatcher):
             self.chatters[sender] = current_time
 
         self.expire_idle_chatters(current_time)
+
+        # Allow '*' instead of '@' for monster lookups to avoid mentions.
+        if content.startswith("*?"):
+            content = '@' + content[1:]
 
         await super().read_chat(sender, content)
 
@@ -367,13 +376,6 @@ class DiscordManager(discord.Client):
             if current_time - c.time_last_message >= _channel_idle_timeout:
                 self.sources.remove(c)
 
-    def filter_content(self, content):
-        # Make '*?' an alias to '@?' in Discord to avoid making mentions.
-        if content.startswith("*?"):
-            content = '@' + content[1:]
-
-        return content
-
     def make_channel_source(self, channel):
         source = self.get_channel_source(channel)
         if not source:
@@ -385,7 +387,8 @@ class DiscordManager(discord.Client):
     async def on_message(self, message):
         """Handle a Discord chat message."""
 
-        if not self.is_logged_in:
+        # Will be defined only if we've logged in.
+        if not self.user:
             return
 
         current_time = time.time()
@@ -394,8 +397,7 @@ class DiscordManager(discord.Client):
         source = self.make_channel_source(message.channel)
         source.time_last_message = current_time
 
-        content = self.filter_content(message.content)
-        await source.read_chat(message.author, content)
+        await source.read_chat(message.author, message.content)
 
     async def on_ready(self):
         """Handle anything that needs to be done only after Discord is fully
@@ -411,7 +413,7 @@ class DiscordManager(discord.Client):
             return
 
         streaming_role = None
-        for r in after.server.roles:
+        for r in after.guild.roles:
             if r.name.lower() == "streaming":
                 streaming_role = r
                 break
@@ -419,16 +421,20 @@ class DiscordManager(discord.Client):
         if not streaming_role:
             return
 
-        if (after.game and after.game.type == 1
-                and streaming_role not in after.roles):
-            await self.add_roles(after, streaming_role)
+        streaming = False
+        for a in after.activities:
+            if isinstance(a, discord.Streaming):
+                streaming = True
+                break
+
+        if streaming and streaming_role not in after.roles:
+            await after.add_roles(streaming_role)
             _log.info("Gave user %s on server %s streaming role", after,
-                    after.server)
-        elif ((not after.game or after.game.type != 1)
-                and streaming_role in after.roles):
-            await self.remove_roles(after, streaming_role)
+                    after.guild)
+        elif not streaming and streaming_role in after.roles:
+            await after.remove_roles(streaming_role)
             _log.info("Removed streaming role for user %s on server %s", after,
-                    after.server)
+                    after.guild)
 
     def get_source_by_ident(self, source_ident):
         """Given an 'identity' key tuple identifying a source, return the
@@ -448,8 +454,8 @@ class DiscordManager(discord.Client):
             return False
 
         for u in self.conf['admins']:
-            for s in self.servers:
-                if s.get_member(u) == user:
+            for s in self.guilds:
+                if s.get_member(int(u)) == user:
                     return True
 
         return False
@@ -462,8 +468,8 @@ class DiscordManager(discord.Client):
             return False
 
         for u in self.conf['ignored_users']:
-            for s in self.servers:
-                if s.get_member(u) == user:
+            for s in self.guilds:
+                if s.get_member(int(u)) == user:
                     return True
 
         return False
@@ -482,7 +488,7 @@ class DiscordManager(discord.Client):
         if self.ping_task and not self.ping_task.done():
             self.ping_task.cancel()
 
-        if self.conf.get("fake_connect") or self.is_closed:
+        if self.conf.get("fake_connect") or self.is_closed():
             return
 
         try:
@@ -514,11 +520,9 @@ async def bot_listcommands_command(source, user):
 async def bot_botstatus_command(source, user):
     """!botstatus chat command"""
 
-    mgr = source.manager
     report = "Version {}".format(Version)
-
     names = []
-    for s in mgr.servers:
+    for s in source.manager.guilds:
         names.append(s.name)
 
     names.sort()
@@ -569,7 +573,7 @@ async def bot_addrole_command(source, user, rolename):
                     "Member {} already has role {}".format(user.name,
                         rolename))
 
-        await source.manager.add_roles(user, r)
+        await user.add_roles(r)
         await source.send_chat(
                 "Member {} has been given role {}".format(user.name, rolename))
         return
@@ -589,7 +593,7 @@ async def bot_removerole_command(source, user, rolename):
                     "Member {} does not have role {}".format(user.name,
                         rolename))
 
-        await source.manager.remove_roles(user, r)
+        await user.remove_roles(r)
         await source.send_chat(
                 "Member {} has lost role {}".format(user.name, rolename))
         return
@@ -638,12 +642,11 @@ async def bot_addfaction_command(source, user, rolename):
                 "Unknown faction: {}".format(rolename))
 
     # First remove any existing faction roles we had.
-    print([f.name for f in to_remove])
     if to_remove:
-        await source.manager.remove_roles(user, *to_remove)
+        await user.remove_roles(*to_remove)
         await asyncio.sleep(0.5)
 
-    await source.manager.add_roles(user, faction)
+    await user.add_roles(faction)
     await source.send_chat(
             "Member {} has faction set to {}".format(user.name,
                 faction.name[:-len(faction_suff)]))
@@ -660,7 +663,7 @@ async def bot_removefaction_command(source, user):
             to_remove.append(f)
 
     if to_remove:
-        await source.manager.remove_roles(user, *to_remove)
+        await user.remove_roles(*to_remove)
         await source.send_chat(
                     "Member {} has lost faction {}".format(user.name,
                         ", ".join([f.name for f in to_remove])))
@@ -672,11 +675,11 @@ async def bot_removefaction_command(source, user):
 async def bot_glasses_command(source, user):
     """!glasses chat command"""
 
-    message = await source.manager.send_message(source.channel, '( •_•)')
+    message = await source.channel.send('( •_•)')
     await asyncio.sleep(0.5)
-    await source.manager.edit_message(message, '( •_•)>⌐■-■')
+    await message.edit(content='( •_•)>⌐■-■')
     await asyncio.sleep(0.5)
-    await source.manager.edit_message(message, '(⌐■_■)')
+    await message.edit(content='(⌐■_■)')
 
 async def bot_deal_command(source, user):
     """!deal chat command"""
@@ -688,72 +691,68 @@ async def bot_deal_command(source, user):
              '            ',
              '            ',
              '    (•_•)   ']
-    mgr = source.manager
-    message = await mgr.send_message(source.channel,
-            '```{}```'.format('\n'.join(lines)))
+    message = await source.channel.send('```{}```'.format('\n'.join(lines)))
     await asyncio.sleep(0.5)
 
     for i in range(3):
-        await mgr.edit_message(message, '```{}```'.format(
+        await message.edit(content='```{}```'.format(
             '\n'.join(lines[:i] + [glasses]+lines[i + 1:])))
         await asyncio.sleep(0.5)
 
-    await mgr.edit_message(message, '```{}```'.format(
+    await message.edit(content='```{}```'.format(
         '\n'.join(lines[:1] + [dealwith] + lines[2:3] + [glasson])))
 
 async def bot_dance_command(source, user):
     """!dance chat command"""
 
-    mgr = source.manager
     figures = [':D|-<', ':D/-<', ':D|-<', r':D\\-<']
-    message = await mgr.send_message(source.channel, figures[0])
+    message = await source.channel.send(figures[0])
     await asyncio.sleep(0.25)
 
     for n in range(2):
         for f in figures[0 if n else 1:]:
-            await mgr.edit_message(message, f)
+            await message.edit(content=f)
             await asyncio.sleep(0.25)
 
-    await mgr.edit_message(message, figures[0])
+    await message.edit(content=figures[0])
 
 async def bot_botdance_command(source, user):
     """!botdance chat command"""
 
-    mgr = source.manager
     figures = ['└[^_^]┐', '┌[^_^]┘']
-    message = await mgr.send_message(source.channel, figures[0])
+    message = await source.channel.send(figures[0])
     await asyncio.sleep(0.25)
 
     for n in range(2):
         for f in figures[0 if n else 1:]:
-            await mgr.edit_message(message, f)
+            await message.edit(content=f)
             await asyncio.sleep(0.25)
 
-    await mgr.edit_message(message, figures[0])
+    await message.edit(content=figures[0])
 
-async def bot_say_command(source, user, server, channel, message):
+async def bot_say_command(source, user, guild, channel, message):
     """!say chat command"""
 
-    mgr = source.manager
-    dest_server = None
-    for s in mgr.servers:
+    dest_guild = None
+    for g in source.manager.guilds:
         # Give exact matches priority
-        if server.lower() == s.name.lower():
-            dest_server = s
+        if guild.lower() == g.name.lower():
+            dest_guild = g
             break
 
-        if server.lower() in s.name.lower():
-            dest_server = s
+        if guild.lower() in g.name.lower():
+            dest_guild = g
 
-    if not dest_server:
+    if not dest_guild:
         raise BotCommandException("Can't find server match for {}, must "
-                "match one of: {}".format(server, ", ".join(
-                    sorted([s.name for s in mgr.servers]))))
+                "match one of: {}".format(guild, ", ".join(
+                    sorted([g.name for g in source.manager.guilds]))))
 
     dest_channel = None
-    chan_filt = lambda c: c.type == discord.ChannelType.text
-    channels = list(filter(chan_filt, dest_server.channels))
-    for c in channels:
+    for c in dest_guild.channels:
+        if not isinstance(c, discord.TextChannel):
+            continue
+
         if channel.lower() == c.name.lower():
             dest_channel = c
             break
@@ -766,7 +765,7 @@ async def bot_say_command(source, user, server, channel, message):
                 "match one of: {}".format(channel,
                     ", ".join(sorted([c.name for c in channels]))))
 
-    await mgr.send_message(dest_channel, message)
+    await dest_channel.send(message)
 
 def center_string_in_line(string, line):
    leftn = int((len(line) - len(string))/2)
@@ -811,18 +810,16 @@ async def bot_firestorm_command(source, user, target=None):
             '....§§§§§§§....',
             '....§§§§§§§....']
 
-    mgr = source.manager
     mid = int(len(floor_lines) / 2)
     floor_lines[mid] = center_string_in_line(target, floor_lines[mid])
 
-    message = await mgr.send_message(source.channel,
-            '```{}```'.format('\n'.join(floor_lines)))
+    message = await source.channel.send(
+            '```\n{}```'.format('\n'.join(floor_lines)))
     await asyncio.sleep(1)
 
     for r in range(1, 5, 2):
         explosion = render_firestorm_explosion(floor_lines, r)
-        message = await mgr.edit_message(message,
-             '```{}```'.format('\n'.join(explosion)))
+        await message.edit(content='```\n{}```'.format('\n'.join(explosion)))
         await asyncio.sleep(0.2)
 
     await asyncio.sleep(0.6)
@@ -838,8 +835,7 @@ async def bot_firestorm_command(source, user, target=None):
             for c in coords:
                 lines[n] = lines[n][:4 + c] + 'v' + lines[n][4 + c + 1:]
 
-        await mgr.edit_message(message,
-                '```{}```'.format('\n'.join(lines)))
+        await message.edit(content='```\n{}```'.format('\n'.join(lines)))
         await asyncio.sleep(0.8)
 
 def render_glaciate_explosion(lines, radius):
@@ -877,18 +873,16 @@ async def bot_glaciate_command(source, user, target=None):
             '......§§§......',
             '.......§.......']
 
-    mgr = source.manager
     mid = int(len(floor_lines) / 2)
     floor_lines[mid] = center_string_in_line(target, floor_lines[mid])
 
-    message = await mgr.send_message(source.channel,
-            '```{}```'.format('\n'.join(floor_lines)))
+    message = await source.channel.send(
+            '```\n{}```'.format('\n'.join(floor_lines)))
     await asyncio.sleep(1)
 
     for r in range(1, 8, 2):
         explosion = render_glaciate_explosion(floor_lines, r)
-        message = await mgr.edit_message(message,
-             '```{}```'.format('\n'.join(explosion)))
+        await message.edit(content='```\n{}```'.format('\n'.join(explosion)))
         await asyncio.sleep(0.2)
 
     blasted = target
@@ -900,17 +894,16 @@ async def bot_glaciate_command(source, user, target=None):
             blasted = blasted[:c] + '8' + blasted[c + 1:]
 
     ice_lines[mid] = center_string_in_line(blasted, ice_lines[mid])
-    await mgr.edit_message(message,
-            '```{}```'.format('\n'.join(ice_lines)))
+    await message.edit(content='```\n{}```'.format('\n'.join(ice_lines)))
 
 async def react_message(source, message, num):
-    emoji = [e for e in message.channel.server.emojis if not e.managed]
+    emoji = [e for e in message.channel.guild.emojis if not e.managed]
     for i in range(0, num):
         if not emoji:
             return
 
         ind = random.randint(0, len(emoji) - 1)
-        await source.manager.add_reaction(message, emoji[ind])
+        await message.add_reaction(emoji[ind])
 
         emoji.remove(emoji[ind])
         await asyncio.sleep(0.25)
@@ -918,7 +911,7 @@ async def react_message(source, message, num):
 async def bot_reactstorm_command(source, user, target=None):
     """!reactstorm chat command"""
 
-    if not source.channel.server.emojis:
+    if not source.channel.guild.emojis:
         return
 
     if target:
@@ -929,7 +922,7 @@ async def bot_reactstorm_command(source, user, target=None):
     max_hist = 10
     reacts_left = 15
     seen_command = False
-    async for m in source.manager.logs_from(source.channel, limit=max_hist):
+    async for m in source.channel.history(limit=max_hist):
         if target and m.author is target:
             num_reacts = random.randint(8, reacts_left)
             await react_message(source, m, num_reacts)
@@ -951,29 +944,29 @@ async def bot_reactstorm_command(source, user, target=None):
             else:
                 return
 
-async def bot_relay_command(source, user, server, channel, message):
+async def bot_relay_command(source, user, guild, channel, message):
     """!relay chat command"""
 
-    mgr = source.manager
-    dest_server = None
-    for s in mgr.servers:
+    dest_guild = None
+    for g in source.manager.guilds:
         # Give exact matches priority
-        if server.lower() == s.name.lower():
-            dest_server = s
+        if guild.lower() == g.name.lower():
+            dest_guild = g
             break
 
-        if server.lower() in s.name.lower():
-            dest_server = s
+        if guild.lower() in g.name.lower():
+            dest_guild = g
 
-    if not dest_server:
+    if not dest_guild:
         raise BotCommandException("Can't find server match for {}, must "
-                "match one of: {}".format(server, ", ".join(
-                    sorted([s.name for s in mgr.servers]))))
+                "match one of: {}".format(guild, ", ".join(
+                    sorted([g.name for g in source.manager.guilds]))))
 
     dest_channel = None
-    chan_filt = lambda c: c.type == discord.ChannelType.text
-    channels = list(filter(chan_filt, dest_server.channels))
-    for c in channels:
+    for c in dest_guild.channels:
+        if not isinstance(c, discord.TextChannel):
+            continue
+
         if channel.lower() == c.name.lower():
             dest_channel = c
             break
@@ -986,27 +979,25 @@ async def bot_relay_command(source, user, server, channel, message):
                 "match one of: {}".format(channel,
                     ", ".join(sorted([c.name for c in channels]))))
 
-    dest_source = mgr.make_channel_source(dest_channel)
-    content = mgr.filter_content(message)
-    await dest_source.read_chat(user, content)
+    dest_source = source.manager.make_channel_source(dest_channel)
+    await dest_source.read_chat(user, message)
 
-@asyncio.coroutine
-def bot_pregen_command(source, user, target=None):
+async def bot_pregen_command(source, user, target=None):
     """!pregen chat command"""
 
-    mgr = source.manager
     memes = ['elves', 'tentacles', 'free beer', 'optimal play',
             'Guaranteed Damage Reduction', 'dragon scales', 'Mephitic Cloud',
-            "Borgnjor's Vile Clutch", 'casters', 'sword-and-board melee toons', 'forks',
-            'wiki guides', 'crabs', 'crawlcode', 'Cheibriados', 'Xom',
+            "Borgnjor's Vile Clutch", 'casters', 'sword-and-board melee toons',
+            'forks', 'wiki guides', 'crabs', 'crawlcode', 'Cheibriados', 'Xom',
             'Qazlal', 'Beogh', 'Sif Muna', 'Pakellas',
             'the Crown of Eternal Torment', 'purple chunks', 'bloatcrawl',
-            "that's BANANAS", 'mikee teleport', 'splatratios', 'winrate', 'high scores',
-            'ghost vaults', 'transporter vaults', 'runed doors', 'role playing', 'traps',
+            "that's BANANAS", 'mikee teleport', 'splatratios', 'winrate',
+            'high scores', 'ghost vaults', 'transporter vaults', 'runed doors',
+            'role playing', 'traps',
             ]
 
     if not target:
-        target = '#dcss'
+        target = '#' + str(source.channel)
 
     header = 'Generating {}...\n '.format(target)
     footer = None
@@ -1031,32 +1022,31 @@ def bot_pregen_command(source, user, target=None):
                 footer)
 
         if not message:
-            message = yield from mgr.send_message(source.channel, content)
+            message = await source.channel.send(content)
         else:
-            message = yield from mgr.edit_message(message, content)
+            await message.edit(content=content)
 
         if footer_delay <= 0:
             footer = None
 
-        yield from asyncio.sleep(0.33)
+        await asyncio.sleep(0.33)
 
 async def bot_reactbomb_command(source, user, emote=None):
     """!reactbomb chat command"""
 
     if not emote:
-        emote = random.choice([e for e in source.channel.server.emojis
+        emote = random.choice([e for e in source.channel.guild.emojis
                                if not e.managed])
     else:
-        for e in source.channel.server.emojis:
+        for e in source.channel.guild.emojis:
             if e.name == emote:
                 emote = e
                 break
 
     max_hist = 10
-    logs = await source.manager.logs_from(source.channel, limit=max_hist)
     seen_command = False
     reacts_left = random.randint(5, max_hist)
-    for m in logs:
+    async for m in source.channel.history(limit=max_hist):
         # Don't react to the command itself.
         if (not seen_command
             and m.author is user
@@ -1069,7 +1059,7 @@ async def bot_reactbomb_command(source, user, emote=None):
         else:
             return
 
-        await source.manager.add_reaction(m, emote)
+        await m.add_reaction(emote)
         await asyncio.sleep(0.25)
 
 # Discord bot commands
