@@ -78,7 +78,8 @@ command_period = 20
 help_text = """I'm a chat bot that relays commands to the DCSS IRC knowledge
 bots Sequell, Gretell, and Cheibriados. Type !listcommands to see
 discord-specific bot commands. For the original Sequell help command, use
-!sequellhelp. For help with discord roles, type: ??cerebot[2]"""
+!sequellhelp. For help with discord roles and factions, type: ??cerebot[2] and
+??cerebot[3]"""
 
 # List of user IDs that are considered bot admins. These are allowed to run
 # admin-only bot commands and to target other users for these commands using
