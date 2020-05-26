@@ -53,7 +53,7 @@ nick = "Cheibriados"
 # Cheibriados only supports lookups for 0.18 through 0.9. We disallow '%?' and
 # '%??' because people will think that those are current, when they're 0.18 and
 # 0.20-a, respectively. Chimera lookups are disabled because those are buggy.
-monster_patterns = ['(?i)^%(0\.9|0\.[1-8])\?(?!.*chimera)']
+monster_patterns = ['(?i)^%(0\.9|0\.1[0-8])\?(?!.*chimera)']
 # Like sequell_patterns above, except for the git lookup of DCSS source code.
 git_patterns = ['^%git']
 
