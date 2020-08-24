@@ -318,7 +318,6 @@ class DiscordManager(discord.Client):
         self.bot_commands = bot_commands
 
         self.single_user = False
-        self.ping_task = None
         self.shutdown = False
         self.sources = set()
 
@@ -332,27 +331,6 @@ class DiscordManager(discord.Client):
         _log.error("Discord Error: %s:", error_msg)
         _log.error("".join(traceback.format_exception(
             exc_type, exc_value, exc_tb)))
-
-    async def start_ping(self):
-        """Start a repeating 10 second ping task to help connection
-        stability."""
-
-        while True:
-            if self.is_closed:
-                return
-
-            try:
-                await self.ws.ping()
-
-            except asyncio.CancelledError:
-                return
-
-            except Exception:
-                self.log_exception("Unable to send ping")
-                asyncio.ensure_future(self.disconnect())
-                return
-
-            await asyncio.sleep(10)
 
     def get_channel_source(self, channel):
         """Get the source object of the given discord channel object."""
@@ -396,12 +374,6 @@ class DiscordManager(discord.Client):
         source.time_last_message = current_time
 
         await source.read_chat(message.author, message.content)
-
-    async def on_ready(self):
-        """Handle anything that needs to be done only after Discord is fully
-        connected and ready. Currently only needed by the ping task."""
-
-        self.ping_task = asyncio.ensure_future(self.start_ping())
 
     async def on_member_update(self, before, after):
         """Handle Discord member state changes. Currently only used to set a
