@@ -2,6 +2,7 @@
 
 import asyncio
 import discord
+import enum
 import logging
 import os
 import random
@@ -12,10 +13,17 @@ import time
 import traceback
 
 from beem.chat import ChatWatcher, BotCommandException, bot_help_command
+from beem.chat import ACCESS_BOT_ADMIN, toggle_arg
 
 from .version import version as Version
 
 _log = logging.getLogger()
+
+class AccessLevel(enum.IntEnum):
+    NORMAL       = 0
+    SERVER_MOD   = enum.auto()
+    SERVER_ADMIN = enum.auto()
+    BOT_ADMIN    = ACCESS_BOT_ADMIN
 
 # Used to split URLs in discord messages.
 _url_regexp = (r'(https?://(?:\S+(?::\S*)?@)?(?:(?:[1-9]\d?|1\d\d|2[01]\d|22'
@@ -42,6 +50,9 @@ class DiscordSource(ChatWatcher):
     channel. These objects are created as needed by the discord manager when
     activity is seen in a new discord channel and cached based on message
     activity."""
+
+    # Users with access below this can be rate-limited.
+    ACCESS_NO_LIMIT = AccessLevel.SERVER_MOD
 
     def __init__(self, manager, channel, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -74,10 +85,9 @@ class DiscordSource(ChatWatcher):
     def describe(self):
         channel_name = None
         if isinstance(self.channel, discord.abc.PrivateChannel):
-            channel_name = 'PM:{}'.format(self.channel.id)
+            channel_name = f'PM:{self.channel.id}'
         else:
-            channel_name = '{}:#{}'.format(self.channel.guild.name,
-                    self.channel.name)
+            channel_name = f'{self.channel.guild.name}:#{self.channel.name}'
         return channel_name
 
     def should_limit_sequell_lines(self, sender):
@@ -90,6 +100,11 @@ class DiscordSource(ChatWatcher):
     def get_dcss_nick(self, user):
         """Return the nick we have mapped for a given user. If the user's name
         has no valid characters, use their discord id instead."""
+
+        user_data = self.manager.bot_db.get_user_data(user.id)
+        if user_data.get('dcssnick'):
+            return user_data['dcssnick']
+
         name = self.get_chat_name(user, True)
         if not name:
             name = str(user.id)
@@ -115,31 +130,25 @@ class DiscordSource(ChatWatcher):
         """Return true if the user is allowed to execute commands in the
         current channel."""
 
-        if self.manager.user_is_admin(user):
-            return True
-
-        if user.bot or self.manager.user_is_ignored(user):
-            return False
-
         return True
 
-    def get_user_by_name(self, name):
-        is_id = name.isdigit()
+    def get_user_by_name(self, username):
+        is_id = username.isdigit()
         if isinstance(self.channel, discord.abc.PrivateChannel):
             for g in self.manager.guilds:
                 if is_id:
-                    member = g.get_member(int(name))
+                    member = g.get_member(int(username))
                 else:
-                    member = g.get_member_named(name)
+                    member = g.get_member_named(username)
 
                 if member:
                     return member
 
         else:
             if is_id:
-                return self.channel.guild.get_member(int(name))
+                return self.channel.guild.get_member(int(username))
             else:
-                return self.channel.guild.get_member_named(name)
+                return self.channel.guild.get_member_named(username)
 
     def get_vanity_roles(self):
         """Find which vanity roles are available on this guild for use with the
@@ -238,27 +247,148 @@ class DiscordSource(ChatWatcher):
 
         return result
 
-    def filter_mentions(self, message):
-        """Don't output anything that would be a mention, since people can
-        abuse this to have the bot say them."""
+    def set_command_targets(self, user, args):
+        """Set the target details of a bot command given its arguments. Find
+        the guild and channel objects for the respective 'server' and 'channel'
+        arguments."""
 
-        parts = re.split(r'(<@&?[0-9]+>)', message)
-        result = ""
-        for i, p in enumerate(parts):
-            # The mentions will be at an even index.
-            if i % 2:
-                p = p.replace('@', '\\@')
-            result += p
+        self.set_command_user(user, args)
 
-        return result
+        dest_server = None
+        if isinstance(self.channel, discord.abc.GuildChannel):
+            dest_server = self.channel.guild
+        if 'server' in vars(args):
+            if args.server:
+                if type(args.server) is list:
+                    args.server = args.server[0]
+
+                dest_server = None
+                guild_matches = []
+                for g in self.manager.guilds:
+                    # Lookup by id
+                    if args.server.isdigit() and g.id == int(args.server):
+                        dest_server = g
+                        break
+
+                    # Give exact matches priority
+                    if args.server.lower() == g.name.lower():
+                        dest_server = g
+                        break
+
+                    if args.server.lower() in g.name.lower():
+                        guild_matches.append(g)
+
+                if dest_server:
+                    args.server = dest_server
+                elif guild_matches:
+                    if len(guild_matches) > 1:
+                        raise BotCommandException(f"Server search "
+                                f"'{args.server}' matches multiple servers: "
+                                f"{', '.join(guild_matches)}")
+                    else:
+                        dest_server = guild_matches.pop()
+                else:
+                    raise BotCommandException("Can't find server match for "
+                            f"{args.server}")
+            else:
+                args.server = dest_server
+
+        if 'channel' in vars(args):
+            if args.channel:
+                if not dest_server:
+                    raise BotCommandException("Current channel has no server, "
+                            f"so channel name {args.channel} is ambiguous")
+
+                if type(args.channel) is list:
+                    args.channel = args.channel[0]
+
+                dest_channel = None
+                channel_matches = []
+                for c in dest_server.channels:
+                    if not isinstance(c, discord.TextChannel):
+                        continue
+
+                    if args.channel.isdigit() and c.id == int(args.channel):
+                        dest_channel = c
+                        break
+
+                    if args.channel.lower() == c.name.lower():
+                        dest_channel = c
+                        break
+
+                if dest_channel:
+                    args.channel = dest_channel
+                else:
+                    raise BotCommandException("Can't find channel match for "
+                            f"'{args.channel}'")
+            else:
+                args.channel = self.channel
+
+        if 'role' in vars(args) and args.role:
+            if not dest_server:
+                raise BotCommandException("Current channel has no server, so"
+                        f"role name {args.role} is ambiguous")
+
+            if type(args.role) is list:
+                args.role = args.role[0]
+
+            dest_role = None
+            role_matches = []
+            for r in dest_server.roles:
+                if args.role.isdigit() and r.id == int(args.role):
+                    dest_role = r
+                    break
+
+                if args.role.lower() == r.name.lower():
+                    dest_role = r
+                    break
+
+                elif args.role.lower() in r.name.lower():
+                    role_matches.append(r)
+
+            if dest_role:
+                args.role = dest_role
+            elif role_matches:
+                if len(role_matches) > 1:
+                    raise BotCommandException(f"Role search "
+                            f"'{args.role}' matches multiple roles: "
+                            f"{', '.join(role_matches)}")
+                else:
+                    dest_role = role_matches.pop()
+            else:
+                raise BotCommandException("Can't find role match for "
+                        f"{args.role}")
+
+    def user_access_level(self, user):
+        """Return True if the user is a bot admin in the given channel by our
+        configuration."""
+
+        user_data = self.manager.bot_db.get_user_data(user.id)
+        if user_data['admin']:
+            return AccessLevel.BOT_ADMIN
+
+        if not isinstance(self.channel, discord.abc.GuildChannel):
+            return AccessLevel.NORMAL
+
+        if self.channel.permissions_for(user).administrator:
+            return AccessLevel.SERVER_ADMIN
+
+        server_data = self.manager.bot_db.get_server_data(
+                self.channel.guild.id)
+        if (server_data and server_data['moderator_role']
+                and self.channel.guild.get_role(
+                    server_data['moderator_role']) in user.roles):
+            return AccessLevel.SERVER_MOD
+
+        return AccessLevel.NORMAL
 
     def check_bot_command_restrictions(self, user, entry):
-        super().check_bot_command_restrictions(user, entry)
+        if (entry.get('access_level')
+                and self.user_access_level(user) < entry['access_level']):
+            raise BotCommandException(
+                    "You don't have permission to run this command.")
 
-        if self.manager.user_is_admin(user):
-            return
-
-        if (entry.get("require_public_channel")
+        if (entry.get('require_guild')
                 and isinstance(self.channel, discord.abc.PrivateChannel)):
             raise BotCommandException(
                     "This command must be run in a public channel.")
@@ -310,11 +440,14 @@ class DiscordManager(discord.Client):
     """Manages the discord client, recieving discord events and handling them
     or passing them to the appropriate channel source object."""
 
-    def __init__(self, conf, dcss_manager, *args, **kwargs):
+    def __init__(self, conf, bot_db, dcss_manager, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.service = "Discord"
         self.conf = conf
+
+        self.bot_db = bot_db
+
         self.bot_commands = bot_commands
 
         self.single_user = False
@@ -322,7 +455,17 @@ class DiscordManager(discord.Client):
         self.sources = set()
 
         self.dcss_manager = dcss_manager
-        dcss_manager.managers["Discord"] = self
+        dcss_manager.managers['Discord'] = self
+
+    def describe(self):
+        return "Discord"
+
+    def update_allowed_servers(self):
+        self.allowed_servers = []
+        for g in self.guilds:
+            server_data = self.bot_db.get_server_data(g.id)
+            if server_data and server_data['allowed']:
+                self.allowed_servers.append(g)
 
     def log_exception(self, error_msg):
         """Log an exception and the associated traceback."""
@@ -353,6 +496,7 @@ class DiscordManager(discord.Client):
                 self.sources.remove(c)
 
     def make_channel_source(self, channel):
+
         source = self.get_channel_source(channel)
         if not source:
             source = DiscordSource(self, channel)
@@ -360,8 +504,23 @@ class DiscordManager(discord.Client):
 
         return source
 
+    async def on_ready(self):
+        """Handle anything that needs to be done only after Discord is fully
+        connected and ready."""
+
+        appinfo = await self.application_info()
+        if (appinfo.owner
+                and not self.bot_db.get_user_data(appinfo.owner.id)['admin']):
+            self.bot_db.set_user_field(appinfo.owner.id, 'admin', True)
+
+        self.update_allowed_servers()
+
     async def on_message(self, message):
         """Handle a Discord chat message."""
+
+        if (isinstance(message.channel, discord.abc.GuildChannel)
+                and message.channel.guild not in self.allowed_servers):
+            return
 
         # Will be defined only if we've logged in.
         if not self.user:
@@ -378,9 +537,6 @@ class DiscordManager(discord.Client):
     async def on_member_update(self, before, after):
         """Handle Discord member state changes. Currently only used to set a
         "streaming" role."""
-
-        if not self.conf.get("set_streaming_role"):
-            return
 
         streaming_role = None
         for r in after.guild.roles:
@@ -443,13 +599,13 @@ class DiscordManager(discord.Client):
         self.shutdown = shutdown
 
 
-async def bot_listcommands_command(source, user):
+async def bot_listcommands_command(source, user, args):
     """!listcommands chat command"""
 
     commands = []
     for com in bot_commands:
         try:
-            source.check_bot_command_restrictions(user, bot_commands[com])
+            source.check_bot_command_restrictions(args.user, bot_commands[com])
 
         except BotCommandException:
             continue
@@ -457,41 +613,36 @@ async def bot_listcommands_command(source, user):
         commands.append(source.bot_command_prefix + com)
 
     commands.sort()
-    await source.send_chat("Available commands: {}".format(
-        ', '.join(commands)))
+    await source.send_chat(f"Available commands: {', '.join(commands)}")
 
-async def bot_botstatus_command(source, user):
+async def bot_botstatus_command(source, user, args):
     """!botstatus chat command"""
 
-    report = "Version {}".format(Version)
     names = []
     for s in source.manager.guilds:
-        names.append(s.name)
+        if s in self.allowed_servers:
+            names.append(s.name)
+    await source.send_chat(f"Version: {Version}; Listening to servers: "
+            f"{', '.join(sorted(names))}")
 
-    names.sort()
-    report = "Version: {}; Listening to servers: {}".format(Version,
-            ", ".join(names))
-    await source.send_chat(report)
-
-async def bot_debugmode_command(source, user, state=None):
+async def bot_debugmode_command(source, user, args):
     """!debugmode chat command"""
 
     state_desc = "on" if _log.isEnabledFor(logging.DEBUG) else "off"
-    if state is None:
+    if args.toggle is None:
         await source.send_chat(
-                "DEBUG level logging is currently {}.".format(state_desc))
+                f"DEBUG level logging is currently {state_desc}.")
         return
 
-    if state == state_desc:
-        raise BotCommandException("DEBUG level already set to {}".format(
-            state))
+    if args.toggle == state_desc:
+        raise BotCommandException(f"DEBUG level already set to {state}")
 
-    state_val = "DEBUG" if state == "on" else "INFO"
+    state_val = "DEBUG" if args.toggle == "on" else "INFO"
     _log.setLevel(state_val)
 
-    await source.send_chat("DEBUG level logging set to {}.".format(state))
+    await source.send_chat(f"DEBUG level logging set to {args.toggle}.")
 
-async def bot_listroles_command(source, user):
+async def bot_listroles_command(source, user, args):
     """!listroles chat command"""
 
     roles = source.get_vanity_roles()
@@ -500,50 +651,42 @@ async def bot_listroles_command(source, user):
 
     await source.send_chat(', '.join(sorted(r.name for r in roles)))
 
-async def bot_addrole_command(source, user, rolename):
+async def bot_addrole_command(source, user, args):
     """!addrole chat command"""
 
     roles = source.get_vanity_roles()
     if not roles:
         raise BotCommandException("No available roles found.")
 
-    for r in roles:
-        if rolename.lower() != r.name.lower():
-            continue
+    if args.role not in roles:
+        raise BotCommandException(f"Can't find role match for {args.role}")
 
-        if r in user.roles:
-            raise BotCommandException(
-                    "Member {} already has role {}".format(user.name,
-                        rolename))
+    if args.role in args.user.roles:
+        raise BotCommandException(
+                f"User {args.user.name} already has role {args.role}")
 
-        await user.add_roles(r)
-        await source.send_chat(
-                "Member {} has been given role {}".format(user.name, rolename))
-        return
+    await args.user.add_roles(args.role)
+    await source.send_chat(
+            f"User {args.user.name} has been given role {args.role}")
 
-    raise BotCommandException("Unknown role: {}".format(rolename))
-
-async def bot_removerole_command(source, user, rolename):
+async def bot_removerole_command(source, user, args):
     """!removerole chat command"""
 
     roles = source.get_vanity_roles()
-    for r in roles:
-        if rolename.lower() != r.name.lower():
-            continue
+    if not roles:
+        raise BotCommandException("No available roles found.")
 
-        if r not in user.roles:
-            raise BotCommandException(
-                    "Member {} does not have role {}".format(user.name,
-                        rolename))
+    if args.role not in roles:
+        raise BotCommandException(f"Can't find role match for {args.role}")
 
-        await user.remove_roles(r)
-        await source.send_chat(
-                "Member {} has lost role {}".format(user.name, rolename))
-        return
+    if args.role not in args.user.roles:
+        raise BotCommandException(
+                f"User {args.user.name} does not have role {args.role}")
 
-    raise BotCommandException("Unknown role: {}".format(rolename))
+    await args.user.remove_roles(args.role)
+    await source.send_chat(f"User {args.user.name} has lost role {args.role}")
 
-async def bot_listfactions_command(source, user):
+async def bot_listfactions_command(source, user, args):
     """!listfactions chat command"""
 
     factions = source.get_faction_roles()
@@ -554,7 +697,7 @@ async def bot_listfactions_command(source, user):
     await source.send_chat(', '.join(sorted(
         f.name[:-len(faction_suff)] for f in factions)))
 
-async def bot_addfaction_command(source, user, rolename):
+async def bot_addfaction_command(source, user, args):
     """!addfaction chat command"""
 
     factions = source.get_faction_roles()
@@ -562,7 +705,7 @@ async def bot_addfaction_command(source, user, rolename):
         raise BotCommandException("No available faction roles found.")
 
     faction = None
-    role_lname = rolename.lower()
+    role_lname = args.role.name.lower()
     faction_suff = ' Faction'
     to_remove = list()
     for f in factions:
@@ -572,50 +715,45 @@ async def bot_addfaction_command(source, user, rolename):
             or base_lname + faction_suff.lower() == role_lname):
             faction = f
 
-            if faction in user.roles:
-                raise BotCommandException(
-                        "Member {} already has faction {}".format(user.name,
-                            base_name))
+            if faction in args.user.roles:
+                raise BotCommandException(f"User {args.user.name} already "
+                        f"has faction {base_name}")
 
         elif f in user.roles:
             to_remove.append(f)
 
     if not faction:
-        raise BotCommandException(
-                "Unknown faction: {}".format(rolename))
+        raise BotCommandException(f"Unknown faction: {args.role}")
 
     # First remove any existing faction roles we had.
     if to_remove:
-        await user.remove_roles(*to_remove)
+        await args.user.remove_roles(*to_remove)
         await asyncio.sleep(0.5)
 
     await user.add_roles(faction)
-    await source.send_chat(
-            "Member {} has faction set to {}".format(user.name,
-                faction.name[:-len(faction_suff)]))
+    await source.send_chat(f"User {args.user.name} has faction set to "
+            f"{faction.name[:-len(faction_suff)]}")
 
     return
 
-async def bot_removefaction_command(source, user):
+async def bot_removefaction_command(source, user, args):
     """!removefaction chat command"""
 
     factions = source.get_faction_roles()
     to_remove = list()
     for f in factions:
-        if f in user.roles:
+        # We remove all faction roles in case there's been a mixup.
+        if f in args.user.roles:
             to_remove.append(f)
 
     if to_remove:
-        await user.remove_roles(*to_remove)
-        await source.send_chat(
-                    "Member {} has lost faction {}".format(user.name,
-                        ", ".join([f.name for f in to_remove])))
-        return
+        await args.user.remove_roles(*to_remove)
+        await source.send_chat(f"User {args.user.name} has lost faction "
+                f"{', '.join([f.name[:-len(' Faction')] for f in to_remove])}")
+    else:
+        raise BotCommandException(f"User {args.user.name} has no faction role")
 
-    raise BotCommandException("Member {} has no faction role".format(
-        user.name))
-
-async def bot_glasses_command(source, user):
+async def bot_glasses_command(source, user, args):
     """!glasses chat command"""
 
     message = await source.channel.send('( •_•)')
@@ -624,7 +762,7 @@ async def bot_glasses_command(source, user):
     await asyncio.sleep(0.5)
     await message.edit(content='(⌐■_■)')
 
-async def bot_deal_command(source, user):
+async def bot_deal_command(source, user, args):
     """!deal chat command"""
 
     glasses = '    ⌐■-■    '
@@ -634,18 +772,19 @@ async def bot_deal_command(source, user):
              '            ',
              '            ',
              '    (•_•)   ']
-    message = await source.channel.send('```{}```'.format('\n'.join(lines)))
+    message = await source.channel.send("```{}```".format(
+        '\n'.join(lines)))
     await asyncio.sleep(0.5)
 
     for i in range(3):
-        await message.edit(content='```{}```'.format(
-            '\n'.join(lines[:i] + [glasses]+lines[i + 1:])))
+        msg = '\n'.join(lines[:i] + [glasses] + lines[i + 1:])
+        await message.edit(content=f"```{msg}```")
         await asyncio.sleep(0.5)
 
-    await message.edit(content='```{}```'.format(
+    await message.edit(content="```{}```".format(
         '\n'.join(lines[:1] + [dealwith] + lines[2:3] + [glasson])))
 
-async def bot_dance_command(source, user):
+async def bot_dance_command(source, user, args):
     """!dance chat command"""
 
     figures = [':D|-<', ':D/-<', ':D|-<', r':D\\-<']
@@ -659,7 +798,7 @@ async def bot_dance_command(source, user):
 
     await message.edit(content=figures[0])
 
-async def bot_botdance_command(source, user):
+async def bot_botdance_command(source, user, args):
     """!botdance chat command"""
 
     figures = ['└[^_^]┐', '┌[^_^]┘']
@@ -673,42 +812,10 @@ async def bot_botdance_command(source, user):
 
     await message.edit(content=figures[0])
 
-async def bot_say_command(source, user, guild, channel, message):
+async def bot_say_command(source, user, args):
     """!say chat command"""
 
-    dest_guild = None
-    for g in source.manager.guilds:
-        # Give exact matches priority
-        if guild.lower() == g.name.lower():
-            dest_guild = g
-            break
-
-        if guild.lower() in g.name.lower():
-            dest_guild = g
-
-    if not dest_guild:
-        raise BotCommandException("Can't find server match for {}, must "
-                "match one of: {}".format(guild, ", ".join(
-                    sorted([g.name for g in source.manager.guilds]))))
-
-    dest_channel = None
-    for c in dest_guild.channels:
-        if not isinstance(c, discord.TextChannel):
-            continue
-
-        if channel.lower() == c.name.lower():
-            dest_channel = c
-            break
-
-        elif channel.lower() in c.name.lower():
-            dest_channel = c
-
-    if not dest_channel:
-        raise BotCommandException("Can't find channel match for {}, must "
-                "match one of: {}".format(channel,
-                    ", ".join(sorted([c.name for c in channels]))))
-
-    await dest_channel.send(message)
+    await args.channel.send(args.message)
 
 def center_string_in_line(string, line):
     len_line = len(line)
@@ -730,7 +837,7 @@ def center_string_in_line(string, line):
     if line_keep % 2:
        left_end += 1
 
-    return "{}{}{}".format(line[0:left_end], string, line[right_start:])
+    return f"{line[0:left_end]}{string}{line[right_start:]}"
 
 def render_firestorm_explosion(lines, radius):
     newlines = list(lines)
@@ -740,11 +847,11 @@ def render_firestorm_explosion(lines, radius):
 
     return newlines
 
-async def bot_firestorm_command(source, user, target=None):
+async def bot_firestorm_command(source, user, args):
     """!firestorm chat command"""
 
-    if not target:
-        target = '#' + str(source.channel)
+    if not args.target:
+        args.target = '#' + str(source.channel)
 
     floor_lines = [
             '...............',
@@ -765,19 +872,19 @@ async def bot_firestorm_command(source, user, target=None):
             '....§§§§§§§....']
 
     mid = int(len(floor_lines) / 2)
-    floor_lines[mid] = center_string_in_line(target, floor_lines[mid])
+    floor_lines[mid] = center_string_in_line(args.target, floor_lines[mid])
 
-    message = await source.channel.send(
-            '```\n{}```'.format('\n'.join(floor_lines)))
+    message = await source.channel.send("```\n{}```".format(
+        '\n'.join(floor_lines)))
     await asyncio.sleep(1)
 
     for r in range(1, 5, 2):
         explosion = render_firestorm_explosion(floor_lines, r)
-        await message.edit(content='```\n{}```'.format('\n'.join(explosion)))
+        await message.edit(content="```\n{}```".format('\n'.join(explosion)))
         await asyncio.sleep(0.2)
 
     await asyncio.sleep(0.6)
-    fire_lines[mid] = center_string_in_line(target, fire_lines[mid])
+    fire_lines[mid] = center_string_in_line(args.target, fire_lines[mid])
     for i in range(0, 3):
         lines = list(fire_lines)
         for n in range(0, len(fire_lines)):
@@ -789,7 +896,7 @@ async def bot_firestorm_command(source, user, target=None):
             for c in coords:
                 lines[n] = lines[n][:4 + c] + 'v' + lines[n][4 + c + 1:]
 
-        await message.edit(content='```\n{}```'.format('\n'.join(lines)))
+        await message.edit(content="```\n{}```".format('\n'.join(lines)))
         await asyncio.sleep(0.8)
 
 def render_glaciate_explosion(lines, radius):
@@ -803,11 +910,11 @@ def render_glaciate_explosion(lines, radius):
 
     return newlines
 
-async def bot_glaciate_command(source, user, target=None):
+async def bot_glaciate_command(source, user, args):
     """!glaciate chat command"""
 
-    if not target:
-        target = '#' + str(source.channel)
+    if not args.target:
+        args.target = '#' + str(source.channel)
 
     floor_lines = [
             '...............',
@@ -828,27 +935,27 @@ async def bot_glaciate_command(source, user, target=None):
             '.......§.......']
 
     mid = int(len(floor_lines) / 2)
-    floor_lines[mid] = center_string_in_line(target, floor_lines[mid])
+    floor_lines[mid] = center_string_in_line(args.target, floor_lines[mid])
 
-    message = await source.channel.send(
-            '```\n{}```'.format('\n'.join(floor_lines)))
+    message = await source.channel.send("```\n{}```".format(
+        '\n'.join(floor_lines)))
     await asyncio.sleep(1)
 
     for r in range(1, 8, 2):
         explosion = render_glaciate_explosion(floor_lines, r)
-        await message.edit(content='```\n{}```'.format('\n'.join(explosion)))
+        await message.edit(content="```\n{}```".format('\n'.join(explosion)))
         await asyncio.sleep(0.2)
 
-    blasted = target
-    if len(target) > 1:
-        block_max = max(1, int(len(target) / 2))
+    blasted = args.target
+    if len(args.target) > 1:
+        block_max = max(1, int(len(args.target) / 2))
         num = random.randint(1, block_max)
-        coords = random.sample(range(0, len(target)), num)
+        coords = random.sample(range(0, len(args.target)), num)
         for c in coords:
             blasted = blasted[:c] + '8' + blasted[c + 1:]
 
     ice_lines[mid] = center_string_in_line(blasted, ice_lines[mid])
-    await message.edit(content='```\n{}```'.format('\n'.join(ice_lines)))
+    await message.edit(content="```\n{}```".format('\n'.join(ice_lines)))
 
 async def react_message(source, message, num):
     emoji = [e for e in message.channel.guild.emojis if not e.managed]
@@ -862,27 +969,25 @@ async def react_message(source, message, num):
         emoji.remove(emoji[ind])
         await asyncio.sleep(0.25)
 
-async def bot_reactstorm_command(source, user, target=None):
+async def bot_reactstorm_command(source, user, args):
     """!reactstorm chat command"""
 
     if not source.channel.guild.emojis:
         return
 
-    if target:
-        target = source.get_user_by_name(target)
-        if not target:
-            return
+    if args.user is user:
+        args.user = None
 
     max_hist = 10
     reacts_left = 15
     seen_command = False
     async for m in source.channel.history(limit=max_hist):
-        if target and m.author is target:
+        if m.author is args.user:
             num_reacts = random.randint(8, reacts_left)
             await react_message(source, m, num_reacts)
             return
 
-        elif not target:
+        elif not args.user:
             # Don't react to the command itself.
             if (not seen_command
                 and m.author is user
@@ -898,45 +1003,13 @@ async def bot_reactstorm_command(source, user, target=None):
             else:
                 return
 
-async def bot_relay_command(source, user, guild, channel, message):
+async def bot_relay_command(source, user, args):
     """!relay chat command"""
 
-    dest_guild = None
-    for g in source.manager.guilds:
-        # Give exact matches priority
-        if guild.lower() == g.name.lower():
-            dest_guild = g
-            break
+    dest_source = source.manager.make_channel_source(args.channel)
+    await dest_source.read_chat(user, args.message)
 
-        if guild.lower() in g.name.lower():
-            dest_guild = g
-
-    if not dest_guild:
-        raise BotCommandException("Can't find server match for {}, must "
-                "match one of: {}".format(guild, ", ".join(
-                    sorted([g.name for g in source.manager.guilds]))))
-
-    dest_channel = None
-    for c in dest_guild.channels:
-        if not isinstance(c, discord.TextChannel):
-            continue
-
-        if channel.lower() == c.name.lower():
-            dest_channel = c
-            break
-
-        elif channel.lower() in c.name.lower():
-            dest_channel = c
-
-    if not dest_channel:
-        raise BotCommandException("Can't find channel match for {}, must "
-                "match one of: {}".format(channel,
-                    ", ".join(sorted([c.name for c in channels]))))
-
-    dest_source = source.manager.make_channel_source(dest_channel)
-    await dest_source.read_chat(user, message)
-
-async def bot_pregen_command(source, user, target=None):
+async def bot_pregen_command(source, user, args):
     """!pregen chat command"""
 
     memes = ['elves', 'tentacles', 'free beer', 'optimal play',
@@ -950,10 +1023,10 @@ async def bot_pregen_command(source, user, target=None):
             'role playing', 'traps',
             ]
 
-    if not target:
-        target = '#' + str(source.channel)
+    if not args.target:
+        args.target = '#' + str(source.channel)
 
-    header = 'Generating {}...\n '.format(target)
+    header = f"Generating {args.target}...\n "
     footer = None
     footer_delay = 0
     message = None
@@ -967,13 +1040,12 @@ async def bot_pregen_command(source, user, target=None):
         suffix = ' ' * (12 - i)
 
         if not footer:
-            footer = '\n building {}   '.format(random.sample(memes, 1)[0])
+            footer = f"\n building {random.sample(memes, 1)[0]}   "
             footer_delay = 2
         else:
             footer_delay = footer_delay - 1
 
-        content = '```{}\n{}{}{}\n{}```'.format(header, prefix, widget, suffix,
-                footer)
+        content = f"```{header}\n{prefix}{widget}{suffix}\n{footer}```"
 
         if not message:
             message = await source.channel.send(content)
@@ -985,10 +1057,11 @@ async def bot_pregen_command(source, user, target=None):
 
         await asyncio.sleep(0.33)
 
-async def bot_reactbomb_command(source, user, emote=None):
+async def bot_reactbomb_command(source, user, args):
     """!reactbomb chat command"""
 
-    if not emote:
+    emote = None
+    if not args.emote:
         emote = random.choice([e for e in source.channel.guild.emojis
                                if not e.managed])
     else:
@@ -996,6 +1069,10 @@ async def bot_reactbomb_command(source, user, emote=None):
             if e.name == emote:
                 emote = e
                 break
+        if not emote:
+            raise BotCommandException(
+                    f"no emote specified and server {source.channel.guild} has "
+                    "no emotes.")
 
     max_hist = 10
     seen_command = False
@@ -1016,192 +1093,291 @@ async def bot_reactbomb_command(source, user, emote=None):
         await m.add_reaction(emote)
         await asyncio.sleep(0.25)
 
-# Discord bot commands
-bot_commands = {
-    "listcommands" : {
-        "unlogged" : True,
-        "function" : bot_listcommands_command,
-    },
-    "botstatus" : {
-        "require_admin" : True,
-        "function" : bot_botstatus_command,
-    },
-    "debugmode" : {
-        "require_admin" : True,
-        "args" : [
-            {
-                "pattern" : r"(on|off)$",
-                "description" : "on|off",
-                "required" : False
-            } ],
-        "source_restriction" : "admin",
-        "function" : bot_debugmode_command,
-    },
-    "bothelp" : {
-        "unlogged" : True,
-        "function" : bot_help_command,
-    },
-    "listroles" : {
-        "require_public_channel" : True,
-        "unlogged" : True,
-        "function" : bot_listroles_command,
-    },
-    "addrole" : {
-        "require_public_channel" : True,
-        "args" : [
-            {
-                "pattern" : r".+$",
-                "description" : "ROLE",
-                "required" : True
-            } ],
-        "function" : bot_addrole_command,
-    },
-    "removerole" : {
-        "require_public_channel" : True,
-        "args" : [
-            {
-                "pattern" : r".+$",
-                "description" : "ROLE",
-                "required" : True
-            } ],
-        "function" : bot_removerole_command,
-    },
-    "removefaction" : {
-        "require_public_channel" : True,
-        "function" : bot_removefaction_command,
-    },
-    "listfactions" : {
-        "require_public_channel" : True,
-        "unlogged" : True,
-        "function" : bot_listfactions_command,
-    },
-    "addfaction" : {
-        "require_public_channel" : True,
-        "args" : [
-            {
-                "pattern" : r".+$",
-                "description" : "ROLE",
-                "required" : True
-            } ],
-        "function" : bot_addfaction_command,
-    },
-    "glasses" : {
-        "require_public_channel" : True,
-        "unlogged" : True,
-        "source_restriction" : "channel",
-        "function" : bot_glasses_command,
-    },
-    "deal" : {
-        "require_public_channel" : True,
-        "unlogged" : True,
-        "function" : bot_deal_command,
-    },
-    "dance" : {
-        "require_public_channel" : True,
-        "unlogged" : True,
-        "function" : bot_dance_command,
-    },
-    "botdance" : {
-        "require_public_channel" : True,
-        "unlogged" : True,
-        "function" : bot_botdance_command,
-    },
-    "say" : {
-        "require_admin" : True,
-        "args" : [
-            {
-                "pattern" : r".+$",
-                "description" : "SERVER",
-                "required" : True
+async def bot_dcssnick_command(source, user, args):
+    """!dcssnick chat command"""
+
+    user_data = source.manager.bot_db.get_user_data(args.user.id)
+    if not args.nick:
+        if user_data['dcssnick']:
+            await source.send_chat(f"User {args.user.name} has dcss nick "
+                    f"{user_data['dcssnick']}")
+        else:
+            await source.send_chat(f"User {args.user.name} has no dcss nick")
+
+        return
+
+    nick_re = re.compile(r'^[a-zA-Z0-9_-]+$')
+    if not nick_re.match(args.nick):
+        raise BotCommandException("DCSS nicks must contain only alphanumeric "
+                "characters and '_' or '-'")
+
+    source.manager.bot_db.set_user_field(user.id, 'dcssnick', args.nick)
+    await source.send_chat(
+            f"DCSS nick for user {args.user.name} is set to {args.nick}")
+
+async def bot_allowserver_command(source, user, args):
+    """!allowserver chat command"""
+
+    mgr = source.manager
+    server_data = mgr.bot_db.get_server_data(args.server.id)
+    mgr.bot_db.set_server_field(args.server.id, 'allowed', True)
+    mgr.update_allowed_servers()
+    await source.send_chat(f"Server {args.server.name} has been allowed.")
+
+async def bot_disallowserver_command(source, user, args):
+    """!disallowserver chat command"""
+
+    mgr = source.manager
+    server_data = mgr.bot_db.get_server_data(args.server.id)
+    mgr.bot_db.set_server_field(args.server.id, 'allowed', False)
+    mgr.update_allowed_servers()
+    await source.send_chat(f"Server {args.server.name} has been disallowed.")
+
+async def bot_setmodrole_command(source, user, args):
+    """!setmodrole chat command"""
+
+    mgr = source.manager
+    server_data = mgr.bot_db.get_server_data(args.server.id, True)
+    mgr.bot_db.set_server_field(args.server.id, 'moderator_role', args.role.id)
+    await source.send_chat(f"Moderator role for server {args.server.name} has "
+            f"been set to role {args.role.name}.")
+
+async def bot_removemodrole_command(source, user, args):
+    """!setmodrole chat command"""
+
+    mgr = source.manager
+    server_data = mgr.bot_db.get_server_data(args.server.id, True)
+    mgr.bot_db.set_server_field(args.server.id, 'moderator_role', 0)
+    await source.send_chat(f"Moderator role for server {args.server.name} has "
+            "been removed.")
+
+# Fields names and default values in the WebTiles DB.
+db_tables = {
+        'discord_users' : [
+            {'name'    : 'id',
+             'type'    : int,
+             'primary' : True,
             },
-            {
-                "pattern" : r".+$",
-                "description" : "CHANNEL",
-                "required" : True
+            {'name'    : 'dcssnick',
+             'type'    : str,
+             'default' : "",
             },
-            {
-                "pattern" : r".+$",
-                "description" : "MESSAGE",
-                "required" : True
+            {'name'    : 'admin',
+             'type'    : bool,
+             'default' : False,
             },
         ],
-        "function" : bot_say_command,
-    },
-    "firestorm" : {
-        "require_public_channel" : True,
-        "unlogged" : True,
-        "args" : [
-            {
-                "pattern" : r".*",
-                "description" : "target",
-                "required" : False
-            } ],
-        "function" : bot_firestorm_command,
-    },
-    "glaciate" : {
-        "require_public_channel" : True,
-        "unlogged" : True,
-        "args" : [
-            {
-                "pattern" : r".*",
-                "description" : "target",
-                "required" : False
-            } ],
-        "function" : bot_glaciate_command,
-    },
-    "reactstorm" : {
-        "require_admin" : True,
-        "require_public_channel" : True,
-        "unlogged" : True,
-        "args" : [
-            {
-                "pattern" : r".*",
-                "description" : "target",
-                "required" : False
-            } ],
-        "function" : bot_reactstorm_command,
-    },
-    "relay" : {
-        "require_admin" : True,
-        "args" : [
-            {
-                "pattern" : r".+$",
-                "description" : "SERVER",
-                "required" : True
+        'discord_servers' : [
+            {'name'    : 'id',
+             'type'    : int,
+             'primary' : True,
             },
-            {
-                "pattern" : r".+$",
-                "description" : "CHANNEL",
-                "required" : True
+            {'name'    : 'allowed',
+             'type'    : bool,
+             'default' : False,
             },
-            {
-                "pattern" : r".+$",
-                "description" : "MESSAGE",
-                "required" : True
-            } ],
-        "function" : bot_relay_command,
+            {'name'    : 'moderator_role',
+             'type'    : int,
+             'default' : 0,
+            },
+        ],
+}
+
+# Some common arguments.
+
+# Designate an optional target user for an across-server command. Requires bot
+# admin.
+user_option = {
+        'name'         : '-u',
+        'dest'         : 'user',
+        'type'         : str,
+        'nargs'        : 1,
+        'default'      : None,
+        'access_level' : AccessLevel.BOT_ADMIN,
+        }
+
+# Like the above, but for server-level user commands mods can run.
+server_user_option = user_option.copy()
+server_user_option['access_level'] = AccessLevel.SERVER_MOD
+
+# An optional user argument that can be used by anyone
+
+# Designate an optional target server for an across-server command. Requires
+# bot admin.
+server_option = {
+        'name'         : '-s',
+        'dest'         : 'server',
+        'type'         : str,
+        'nargs'        : 1,
+        'default'      : None,
+        'access_level' : AccessLevel.BOT_ADMIN,
+        }
+
+# Like the above, but required.
+server_arg = {
+        'name'         : 'server',
+        'type'         : str,
+        'access_level' : AccessLevel.BOT_ADMIN,
+        }
+
+channel_option = {
+        'name'    : '-c',
+        'dest'    : 'channel',
+        'type'    : str,
+        'nargs'   : 1,
+        'default' : None,
+        }
+
+# An argument for looking up discord roles.
+role_arg = { 'name' : 'role', 'type' : str }
+
+# An optional target string for joke commands
+target_arg = {
+        'name'    : 'target',
+        'type'    : str,
+        'nargs'   : '?',
+        'default' : None,
+        }
+
+# Discord bot commands
+bot_commands = {
+    'listcommands' : {
+        'function' : bot_listcommands_command,
     },
-    "pregen" : {
-        "require_public_channel" : True,
-        "unlogged" : True,
-        "args" : [
-            {
-                "pattern" : r".*",
-                "description" : "target",
-                "required" : False
-            } ],
-        "function" : bot_pregen_command,
+    'botstatus' : {
+        'access_level' : AccessLevel.BOT_ADMIN,
+        'function'     : bot_botstatus_command,
     },
-    "reactbomb" : {
-        "require_admin" : True,
-        "require_public_channel" : True,
-        "unlogged" : True,
-        "args" : [
-            {
-                "pattern" : r".*",
-                "description" : "emote",
-                "required" : False
-            } ],
-        "function" : bot_reactbomb_command,
+    'debugmode' : {
+        'access_level' : AccessLevel.BOT_ADMIN,
+        'args'         : [ toggle_arg ],
+        'function'     : bot_debugmode_command,
+    },
+    'bothelp' : {
+        'function' : bot_help_command,
+    },
+    'listroles' : {
+        'require_guild' : True,
+        'args'          : [ server_option ],
+        'function'      : bot_listroles_command,
+    },
+    'addrole' : {
+        'require_guild' : True,
+        'args'          : [ server_user_option, role_arg ],
+        'function'      : bot_addrole_command,
+    },
+    'removerole' : {
+        'require_guild' : True,
+        'args'          : [ server_user_option, role_arg ],
+        'function' : bot_removerole_command,
+    },
+    'removefaction' : {
+        'require_guild' : True,
+        'args'          : [ server_option, server_user_option ],
+        'function' : bot_removefaction_command,
+    },
+    'listfactions' : {
+        'require_guild' : True,
+        'args'          : [ server_option ],
+        'function'      : bot_listfactions_command,
+    },
+    'addfaction' : {
+        'require_guild' : True,
+        'args'          : [ server_option, server_user_option, role_arg ],
+        'function' : bot_addfaction_command,
+    },
+    'dcssnick' : {
+            'args' : [
+                { 'name' : 'nick', 'type' : str, 'nargs' : '?',
+                    'default' : None},
+                ],
+        'function' : bot_dcssnick_command,
+    },
+    'allowserver' : {
+        'access_level'     : AccessLevel.BOT_ADMIN,
+            'args'         : [ server_arg ],
+            'function'     : bot_allowserver_command,
+    },
+    'disallowserver' : {
+            'access_level' : AccessLevel.BOT_ADMIN,
+            'args'         : [ server_arg ],
+            'function'     : bot_disallowserver_command,
+    },
+    'setmodrole' : {
+            'access_level' : AccessLevel.SERVER_ADMIN,
+            'args'         : [ server_option, role_arg ],
+            'function'     : bot_setmodrole_command,
+    },
+    'removemodrole' : {
+            'access_level' : AccessLevel.SERVER_ADMIN,
+            'args'         : [ server_option ],
+            'function'     : bot_removemodrole_command,
+    },
+
+    # Joke commands
+    'glasses' : {
+        'require_guild' : True,
+        'function'      : bot_glasses_command,
+    },
+    'deal' : {
+        'require_guild' : True,
+        'function'      : bot_deal_command,
+    },
+    'dance' : {
+        'require_guild' : True,
+        'function'      : bot_dance_command,
+    },
+    'botdance' : {
+        'require_guild' : True,
+        'function'      : bot_botdance_command,
+    },
+    'say' : {
+        'access_level' : AccessLevel.SERVER_MOD,
+        'args'          : [
+            server_option,
+            channel_option,
+            { 'name' : 'message', 'type' : str },
+        ],
+        'function' : bot_say_command,
+    },
+    'firestorm' : {
+        'require_guild' : True,
+        'args'          : [ target_arg ],
+        'function' : bot_firestorm_command,
+    },
+    'glaciate' : {
+        'require_guild' : True,
+        'args'          : [ target_arg ],
+        'function'      : bot_glaciate_command,
+    },
+    'reactstorm' : {
+        'access_level'  : AccessLevel.SERVER_MOD,
+        'require_guild' : True,
+        'args'          : [
+            { 'name' : 'user', 'type' : str, 'nargs' : '?', 'default' : None },
+            ],
+        'function' : bot_reactstorm_command,
+    },
+    'relay' : {
+        'access_level' : AccessLevel.SERVER_MOD,
+        'args'          : [
+            server_option,
+            channel_option,
+            { 'name' : 'message', 'type' : str },
+        ],
+        'function' : bot_relay_command,
+    },
+    'pregen' : {
+        'require_guild' : True,
+        'args'          : [ target_arg ],
+        'function' : bot_pregen_command,
+    },
+    'reactbomb' : {
+        'access_level'  : AccessLevel.SERVER_MOD,
+        'require_guild' : True,
+        'args'          : [
+            { 'name' : 'emote', 'type' : str, 'nargs' : '?', 'default' : None},
+            ],
+        'function'       : bot_reactbomb_command,
     },
 }

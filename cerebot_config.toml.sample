@@ -2,6 +2,9 @@
 # Cerebot configuration file
 # ==========================
 
+# Sqlite3 database file.
+db_file = "cerebot_data.db3"
+
 # =========================
 # === DCSS IRC settings ===
 [dcss]
@@ -25,11 +28,6 @@ port = 6667
 # the username.
 nick = ""
 
-# Chat messages matching these regular expressions anywhere in the message will
-# not be passed on to any IRC bot. You can add regular expression patterns to
-# this array to prevent users from running certain commands.
-# bad_patterns = []
-
 # Generally you won't want to change any of the remaining settings in the
 # dcss table, unless you want to different irc bots from the official ones.
 
@@ -39,7 +37,7 @@ nick = "Sequell"
 # commands in chat. A chat message must match one of these at to be forwarded
 # to Sequell.
 sequell_patterns = ['^\?\?', '(?i)^[qr]\?\?', '[^?]\?\?\??\s*$', '^\?/',
-		    '^[!&.=][\S]+', '(?i)^rip\b', '(?i)\bgong\b', '(?i)^cang$',
+                    '^[!&.=][\S]+', '(?i)^rip\b', '(?i)\bgong\b', '(?i)^cang$',
                     '^(?i)You die...']
 
 [[dcss.bots]]
@@ -80,22 +78,6 @@ bots Sequell, Gretell, and Cheibriados. Type !listcommands to see
 discord-specific bot commands. For the original Sequell help command, use
 !sequellhelp. For help with discord roles and factions, type: ??cerebot[2] and
 ??cerebot[3]"""
-
-# List of user IDs that are considered bot admins. These are allowed to run
-# admin-only bot commands and to target other users for these commands using
-# the ^name syntax. Each entry must be the user's unique discord ID, which is
-# not the same as the `name#number' username+discriminator string. Use 'Copy
-# ID' on the username from developer mode to see this ID.
-# admins = []
-
-# Users with IDs in this list will not be able to execute any kind of command
-# through the bot. Like the admins list above, each entry must be the user's
-# unique discord ID.
-# ignored_users = []
-
-# Enable this to set a role named "streaming" when the user goes into streaming
-# mode.
-# set_streaming_role = true
 
 # =============================
 # === Logging Configuration ===

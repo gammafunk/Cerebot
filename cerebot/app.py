@@ -1,9 +1,5 @@
-#!/usr/bin/env python3
-
-"""cerebot: A Discord chat bot that can relay queries to the IRC
-knowledge bots for DCSS.
-
-"""
+"""cerebot: A Discord chat bot that can relay queries to the DCSS knowledge
+bots on IRC."""
 
 import argparse
 import asyncio
@@ -16,8 +12,9 @@ import traceback
 
 from beem.dcss import DCSSManager
 
-from .discord import DiscordManager
+from .botdb import CerebotDB
 from .config import CerebotConfig
+from .discord import DiscordManager, db_tables
 from .version import version
 
 ## Will be configured by Cerebot after the config is loaded.
@@ -26,14 +23,10 @@ _log = logging.getLogger()
 _DEFAULT_CONFIG_FILE = "cerebot_config.toml"
 
 class Cerebot:
-    """Cerebot. Load the configuration and runs the tasks for the DCSS
-    and Discord managers.
-
-    """
+    """Cerebot. Load the configuration and runs the tasks for the DCSS and
+    Discord managers."""
 
     def __init__(self, config_file):
-        self.dcss_task = None
-        self.discord_task = None
         self.loop = asyncio.get_event_loop()
         self.shutdown_error = False
 
@@ -43,10 +36,20 @@ class Cerebot:
             self.conf.load()
 
         except Exception:
-            self.critical_error("App Error loading config file {}:".format(
-                self.conf.path))
+            self.critical_error(
+                    f"App Error loading config file {self.conf.path}:")
 
+        self.bot_db = CerebotDB(self.conf.db_file, db_tables)
+        try:
+            self.bot_db.load_db()
+
+        except Exception:
+            self.critical_error(f"unable to load DB file {self.conf.db_file}:")
+
+        self.dcss_task = None
         self.dcss_manager = DCSSManager(self.conf.dcss)
+
+        self.discord_task = None
         self.discord_manager = None
 
     def critical_error(self, error_msg):
@@ -64,7 +67,7 @@ class Cerebot:
 
         def do_exit(signame):
             is_error = True if signame == "SIGTERM" else False
-            msg = "Shutting down bot due to signal: {}".format(signame)
+            msg = f"Shutting down bot due to signal: {signame}"
 
             if is_error:
                 _log.error(msg)
@@ -77,7 +80,7 @@ class Cerebot:
                                            functools.partial(do_exit, signame))
 
         print("Event loop running forever, press Ctrl+C to interrupt.")
-        print("pid {}: send SIGINT or SIGTERM to exit.".format(os.getpid()))
+        print(f"Process ID {os.getpid()}: send SIGINT or SIGTERM to exit.")
 
         try:
             self.loop.run_until_complete(self.process())
@@ -116,7 +119,7 @@ class Cerebot:
 
                 # We re-instantiate the manager and create a new websocket.
                 self.discord_manager = DiscordManager(self.conf.discord,
-                                                      self.dcss_manager)
+                        self.bot_db, self.dcss_manager)
                 self.discord_task = asyncio.ensure_future(
                         self.discord_manager.start())
 
