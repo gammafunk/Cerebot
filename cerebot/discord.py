@@ -33,6 +33,10 @@ _channel_idle_timeout = 90 * 60
 # include them in the $chat variable.
 _chatter_idle_timeout = 60 * 60
 
+# How long to wait after a connection failure before reattempting the
+# connection.
+_RECONNECT_TIMEOUT = 5
+
 class DiscordSource(ChatWatcher):
     """The channel source object that handles chat for any kind of discord
     channel. These objects are created as needed by the discord manager when
@@ -434,53 +438,26 @@ class DiscordManager(discord.Client):
         """Given an 'identity' key tuple identifying a source, return the
         source object."""
 
-        channel = self.get_channel(source_ident["id"])
+        channel = self.get_channel(source_ident['id'])
         if not channel:
             return None
 
         return self.get_channel_source(channel)
 
-    def user_is_admin(self, user):
-        """Return True if the user is a bot admin in the given channel by our
-        configuration."""
-
-        if not self.conf.get('admins'):
-            return False
-
-        for u in self.conf['admins']:
-            for s in self.guilds:
-                if s.get_member(int(u)) == user:
-                    return True
-
-        return False
-
-    def user_is_ignored(self, user):
-        """Return True if the user is ignored in the given channel by our
-        configuration."""
-
-        if not self.conf.get('ignored_users'):
-            return False
-
-        for u in self.conf['ignored_users']:
-            for s in self.guilds:
-                if s.get_member(int(u)) == user:
-                    return True
-
-        return False
-
     async def start(self):
         """Set the discord login token an connect, processing discord events
         indefinitely."""
 
-        await self.login(self.conf['token'])
-        await self.connect()
+        try:
+            await self.login(self.conf['token'])
+            await self.connect()
+        except Exception:
+            self.log_exception("Error when attempting connection")
+            await asyncio.sleep(_RECONNECT_TIMEOUT)
 
     async def disconnect(self, shutdown=False):
         """Disconnect from Discord. This will log any disconnection error, but
         never raise."""
-
-        if self.ping_task and not self.ping_task.done():
-            self.ping_task.cancel()
 
         if self.conf.get("fake_connect") or self.is_closed():
             return
