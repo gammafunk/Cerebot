@@ -439,6 +439,8 @@ class DiscordManager(discord.Client):
 
         self.shutdown = False
         self.sources = set()
+        self.allowed_servers = set()
+        self.allowed_pm = {}
 
         self.dcss_manager = dcss_manager
         dcss_manager.managers[self.service] = self
@@ -447,11 +449,12 @@ class DiscordManager(discord.Client):
         return "Discord"
 
     def update_allowed_servers(self):
-        self.allowed_servers = []
+        self.allowed_servers = set()
+        self.allowed_pm = {}
         for g in self.guilds:
             server_data = self.bot_db.get_server_data(g.id)
             if server_data and server_data['allowed']:
-                self.allowed_servers.append(g)
+                self.allowed_servers.add(g.id)
 
     def log_error(self, error_msg):
         """Log an exception and the associated traceback."""
@@ -494,22 +497,45 @@ class DiscordManager(discord.Client):
         """Handle anything that needs to be done only after Discord is fully
         connected and ready."""
 
+        self.update_allowed_servers()
+
         appinfo = await self.application_info()
         if (appinfo.owner
                 and not self.bot_db.get_user_data(appinfo.owner.id)['admin']):
             self.bot_db.set_user_field(appinfo.owner.id, 'admin', True)
-
-        self.update_allowed_servers()
+            self.allowed_pm[appinfo.owner.id] = True
 
     async def on_message(self, message):
         """Handle a Discord chat message."""
 
-        if (isinstance(message.channel, discord.abc.GuildChannel)
-                and message.channel.guild not in self.allowed_servers):
-            return
-
         # Will be defined only if we've logged in.
         if not self.user:
+            return
+
+        allowed = False
+        if (isinstance(message.channel, discord.abc.GuildChannel)
+                and message.channel.guild.id in self.allowed_servers):
+            allowed = True
+        # Users are allowed to PM the bot if they're in an allowed server.
+        # Cache this lookup for future messages.
+        elif isinstance(message.channel, discord.abc.PrivateChannel):
+            if message.author.id in self.allowed_pm:
+                allowed = self.allowed_pm[message.author.id]
+            else:
+                # Admins are always allowed to PM.
+                if self.bot_db.get_user_data(message.author.id)['admin']:
+                    allowed = True
+                else:
+                    for s in self.allowed_servers:
+                        s = self.get_guild(s)
+                        member = s.get_member(message.author.id)
+                        if member:
+                            allowed = True
+                            break
+
+                self.allowed_pm[message.author.id] = allowed
+
+        if not allowed:
             return
 
         current_time = time.time()
