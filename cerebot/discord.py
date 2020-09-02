@@ -26,12 +26,16 @@ class AccessLevel(enum.IntEnum):
     BOT_ADMIN    = ACCESS_BOT_ADMIN
 
 # Used to split URLs in discord messages.
-_url_regexp = (r'(https?://(?:\S+(?::\S*)?@)?(?:(?:[1-9]\d?|1\d\d|2[01]\d|22'
-               r'[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?'
-               r'|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z\u00a1-\uffff0-9]+-?)*'
-               r'[a-z\u00a1-\uffff0-9]+)(?:\.(?:[a-z\u00a1-\uffff0-9]+-?)*'
-               r'[a-z\u00a1-\uffff0-9]+)*(?:\.(?:[a-z\u00a1-\uffff]{2,})))'
-               r'(?::\d{2,5})?(?:/[^\s]*)?)')
+_url_regexp = re.compile(
+r'(https?://(?:\S+(?::\S*)?@)?(?:(?:[1-9]\d?|1\d\d|2[01]\d|22'
+r'[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?'
+r'|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z\u00a1-\uffff0-9]+-?)*'
+r'[a-z\u00a1-\uffff0-9]+)(?:\.(?:[a-z\u00a1-\uffff0-9]+-?)*'
+r'[a-z\u00a1-\uffff0-9]+)*(?:\.(?:[a-z\u00a1-\uffff]{2,})))'
+r'(?::\d{2,5})?(?:/[^\s]*)?)')
+
+# String that faction roles end with.
+_faction_suffix = " Faction"
 
 # How long we allow inactivity in a channel before we remove its channel source
 # object from the cache.
@@ -43,7 +47,7 @@ _chatter_idle_timeout = 60 * 60
 
 # How long to wait after a connection failure before reattempting the
 # connection.
-_RECONNECT_TIMEOUT = 5
+_reconnect_timeout = 5
 
 class DiscordSource(ChatWatcher):
     """The channel source object that handles chat for any kind of discord
@@ -181,13 +185,12 @@ class DiscordSource(ChatWatcher):
                 roles.append(r)
 
         # Remove any roles that are faction roles. These would end in
-        # ' Faction' and have a corresponding role without that suffix.
+        # _faction_suffix and have a corresponding role without that suffix.
         role_names = [r.name for r in roles]
-        faction_suff = " Faction"
         for r in guild.roles:
             if (r in roles
-                and r.name.endswith(faction_suff)
-                and r.name[:-len(faction_suff)] in role_names):
+                and r.name.endswith(_faction_suffix)
+                and r.name[:-len(_faction_suffix)] in role_names):
                 roles.remove(r)
 
         return roles
@@ -203,7 +206,7 @@ class DiscordSource(ChatWatcher):
         guild = self.channel.guild
         bot_role = None
         for r in guild.roles:
-            if r.name == "Bot Faction" and r in guild.me.roles:
+            if r.name == "Bot" + _faction_suffix and r in guild.me.roles:
                 bot_role = r
                 break
 
@@ -213,11 +216,10 @@ class DiscordSource(ChatWatcher):
         roles = self.get_vanity_roles()
         factions = []
         role_names = [r.name for r in roles]
-        faction_suff = " Faction"
         for r in guild.roles:
             if (r.position < bot_role.position
-                and r.name.endswith(faction_suff)
-                and r.name[:-len(faction_suff)] in role_names):
+                and r.name.endswith(_faction_suffix)
+                and r.name[:-len(_faction_suffix)] in role_names):
 
                 factions.append(r)
 
@@ -227,13 +229,13 @@ class DiscordSource(ChatWatcher):
         """Get a unique identifier hash of the discord channel."""
 
         # Channels are uniquely identified by ID.
-        return {"service" : self.manager.service, "id" : self.channel.id}
+        return {'service' : self.manager.service, 'id' : self.channel.id}
 
     def filter_markdown(self, message):
         """Escape most markdown from message output, being careful not to
         mangle any URLs and allowing backticks to remain."""
 
-        parts = re.split(_url_regexp, message)
+        parts = _url_regexp.split(message)
         result = ""
         for i, p in enumerate(parts):
             # URLs parts are at odd indices. Place angle brackes around these
@@ -401,21 +403,21 @@ class DiscordSource(ChatWatcher):
             if current_time - self.chatters[c] >= _chatter_idle_timeout:
                 del self.chatters[c]
 
-    async def send_chat(self, message, message_type="normal"):
+    async def send_chat(self, message, message_type='normal'):
         """Clean up message output before sending it to chat."""
 
         # Clean up any markdown we don't want.
-        if message_type == "monster":
+        if message_type == 'monster':
             message = message.replace('```', r'\`\`\`')
         else:
             message = self.filter_markdown(message)
             message = discord.utils.escape_mentions(message)
 
-        if message_type == "action":
+        if message_type == 'action':
             message = '_' + message + '_'
         # Put monster output in a code block for readability of the tightly
         # spaced info.
-        elif message_type == "monster":
+        elif message_type == 'monster':
             message = '```\n' + message + '\n```'
         elif self.message_needs_escape(message):
             message = "]" + message
@@ -443,19 +445,18 @@ class DiscordManager(discord.Client):
     def __init__(self, conf, bot_db, dcss_manager, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.service = "Discord"
+        self.service = 'Discord'
         self.conf = conf
 
         self.bot_db = bot_db
 
         self.bot_commands = bot_commands
 
-        self.single_user = False
         self.shutdown = False
         self.sources = set()
 
         self.dcss_manager = dcss_manager
-        dcss_manager.managers['Discord'] = self
+        dcss_manager.managers[self.service] = self
 
     def describe(self):
         return "Discord"
@@ -467,11 +468,11 @@ class DiscordManager(discord.Client):
             if server_data and server_data['allowed']:
                 self.allowed_servers.append(g)
 
-    def log_exception(self, error_msg):
+    def log_error(self, error_msg):
         """Log an exception and the associated traceback."""
 
         exc_type, exc_value, exc_tb = sys.exc_info()
-        _log.error("Discord Error: %s:", error_msg)
+        _log.error(f"{self.describe()}: Error: {error_msg}:")
         _log.error("".join(traceback.format_exception(
             exc_type, exc_value, exc_tb)))
 
@@ -580,21 +581,21 @@ class DiscordManager(discord.Client):
             await self.login(self.conf['token'])
             await self.connect()
         except Exception:
-            self.log_exception("Error when attempting connection")
-            await asyncio.sleep(_RECONNECT_TIMEOUT)
+            self.log_error("Error when attempting connection")
+            await asyncio.sleep(_reconnect_timeout)
 
     async def disconnect(self, shutdown=False):
         """Disconnect from Discord. This will log any disconnection error, but
         never raise."""
 
-        if self.conf.get("fake_connect") or self.is_closed():
+        if self.conf.get('fake_connect') or self.is_closed():
             return
 
         try:
             await self.close()
 
         except Exception:
-            self.log_exception("Error when disconnecting")
+            self.log_error("Error when disconnecting")
 
         self.shutdown = shutdown
 
