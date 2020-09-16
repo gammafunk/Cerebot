@@ -136,7 +136,7 @@ class DiscordSource(ChatWatcher):
         """Return true if the user is allowed to execute commands in the
         current channel."""
 
-        return True
+        return not user.bot
 
     def get_managed_roles(self):
         """Find which bot-managed roles are available on this guild for use
