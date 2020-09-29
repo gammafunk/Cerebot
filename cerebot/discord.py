@@ -1349,7 +1349,7 @@ bot_commands = {
         'args'          : [
             server_option,
             channel_option,
-            { 'name' : 'message', 'type' : str },
+            { 'name' : 'message', 'type' : str, 'aggregate' : True},
         ],
     },
     'firestorm' : {
@@ -1376,7 +1376,7 @@ bot_commands = {
         'args'         : [
             server_option,
             channel_option,
-            { 'name' : 'message', 'type' : str },
+            { 'name' : 'message', 'type' : str, 'aggregate' : True},
         ],
     },
     'pregen' : {
