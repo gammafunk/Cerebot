@@ -428,7 +428,9 @@ class DiscordManager(discord.Client):
     or passing them to the appropriate channel source object."""
 
     def __init__(self, conf, bot_db, dcss_manager, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        intents = discord.Intents.default()
+        intents.members = True
+        super().__init__(*args, intents=intents, **kwargs)
 
         self.service = 'Discord'
         self.conf = conf
