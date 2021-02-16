@@ -416,10 +416,6 @@ class DiscordSource(ChatWatcher):
 
         self.expire_idle_chatters(current_time)
 
-        # Allow '*' instead of '@' for monster lookups to avoid mentions.
-        if content.startswith("*?"):
-            content = '@' + content[1:]
-
         await super().read_chat(sender, content)
 
 
