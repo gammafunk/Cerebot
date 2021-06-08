@@ -21,13 +21,13 @@ class CerebotDB(BotDB):
         return self.set_row_field('discord_users', [username], field, value,
                 create)
 
-    def get_server_data(self, server, default=False):
+    def get_server_data(self, server_id, default=False):
         """Get the server data of the given server from the cache of the server
         table. If default is True and the server isn't in the cache, return a
         row of default data. If default is False, missing servers generate
         None."""
 
-        return self.get_row('discord_servers', [server], default)
+        return self.get_row('discord_servers', [server_id], default)
 
     def set_server_field(self, server_id, field, value, create=True):
         return self.set_row_field('discord_servers', [server_id], field,
