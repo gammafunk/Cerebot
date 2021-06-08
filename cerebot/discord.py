@@ -215,9 +215,22 @@ class DiscordSource(ChatWatcher):
         # Channels are uniquely identified by ID.
         return {'service' : self.manager.service, 'id' : self.channel.id}
 
+    def filter_text(self, message):
+        """Censor any text according to our list of text filters, replacing
+        each match with the text [censored]."""
+
+        if (isinstance(self.channel, discord.abc.PrivateChannel)
+                or self.channel.guild.id not in self.manager.text_filters):
+            return message
+
+        result = message
+        for f in self.manager.text_filters[self.channel.guild.id]:
+            result = f.sub('[censored]', result)
+        return result
+
     def filter_markdown(self, message):
-        """Escape most markdown from message output, being careful not to
-        mangle any URLs and allowing backticks to remain."""
+        """Escape markdown from message output, being careful not to mangle any
+        URLs."""
 
         parts = _url_regexp.split(message)
         result = ""
@@ -378,7 +391,7 @@ class DiscordSource(ChatWatcher):
         if (entry.get('require_guild')
                 and isinstance(self.channel, discord.abc.PrivateChannel)):
             raise BotCommandException(
-                    "This command must be run in a public channel.")
+                    "This command must be run in a server channel.")
 
     def expire_idle_chatters(self, current_time):
         """Remove any chatters from the list maintained for the $chat variable
@@ -390,6 +403,8 @@ class DiscordSource(ChatWatcher):
 
     async def send_chat(self, message, message_type='normal'):
         """Clean up message output before sending it to chat."""
+
+        message = self.filter_text(message)
 
         # Clean up any markdown we don't want.
         if message_type == 'monster':
@@ -462,6 +477,25 @@ class DiscordManager(discord.Client):
         _log.error("".join(traceback.format_exception(
             exc_type, exc_value, exc_tb)))
 
+    def update_text_filters(self):
+        """Update the per-server list of text filter compiled regular
+        expressions so we can use them for text filtering."""
+
+        self.text_filters = {}
+        for g in self.guilds:
+            if g.id not in self.allowed_servers:
+                continue
+
+            server_data = self.bot_db.get_server_data(g.id)
+            if not server_data['text_filter']:
+                continue
+
+            filters = []
+            terms = server_data['text_filter'].split(',')
+            for t in terms:
+                filters.append(re.compile(re.escape(t.strip()), re.IGNORECASE))
+            self.text_filters[g.id] = filters
+
     def get_channel_source(self, channel):
         """Get the source object of the given discord channel object."""
 
@@ -496,6 +530,7 @@ class DiscordManager(discord.Client):
         connected and ready."""
 
         self.update_allowed_servers()
+        self.update_text_filters()
 
         appinfo = await self.application_info()
         if (appinfo.owner
@@ -636,6 +671,10 @@ db_tables = {
             {'name'    : 'moderator_role',
              'type'    : int,
              'default' : 0,
+            },
+            {'name'    : 'text_filter',
+             'type'    : str,
+             'default' : "",
             },
         ],
 }
@@ -845,7 +884,7 @@ async def bot_botdance_command(source, requester, args):
 async def bot_say_command(source, requester, args):
     """!say chat command"""
 
-    await args.channel.send(args.message)
+    await args.channel.send(source.filter_text(args.message))
 
 def center_string_in_line(string, line):
     len_line = len(line)
@@ -1187,6 +1226,47 @@ async def bot_removemodrole_command(source, requester, args):
     await source.send_chat(f"Moderator role for server {args.server.name} has "
             "been removed.")
 
+async def bot_textfilter_command(source, requester, args):
+    """!textfilter chat command"""
+
+    if not args.server:
+        raise BotCommandException("This is a private channel and no server is "
+                "specified.")
+
+    mgr = source.manager
+    server_data = mgr.bot_db.get_server_data(args.server.id)
+    if not args.filter:
+        if server_data['text_filter']:
+            terms = ','.join([t[0] + "*" * len(t[1:])
+                for t in server_data['text_filter'].split(',')])
+            await source.send_chat(f"Server {args.server.name} has text filter "
+                    f"{terms}")
+        else:
+            await source.send_chat(f"Server {args.server.name} has no text "
+                    "filter")
+
+        return
+
+    terms = [t.strip().lower() for t in args.filter.split(',')]
+    mgr.bot_db.set_server_field(args.server.id, 'text_filter', ','.join(terms))
+    mgr.update_text_filters()
+    await source.send_chat(
+            f"Text filter for server {args.server.name} is set to "
+            "{0}".format(','.join([t[0] + "*" * len(t[1:]) for t in terms])))
+
+async def bot_removetextfilter_command(source, requester, args):
+    """!removetextfilter chat command"""
+
+    if not args.server:
+        raise BotCommandException("This is a private channel and no server is "
+                "specified.")
+
+    source.manager.bot_db.set_server_field(args.server.id, 'text_filter', '')
+    source.manager.update_text_filters()
+    await source.send_chat(f"Text filter for server {args.server.name} has "
+            "been removed.")
+
+
 # Some common arguments.
 
 # Designate an optional target user for an across-server command. Requires bot
@@ -1215,7 +1295,7 @@ server_option = {
         'access_level' : AccessLevel.BOT_ADMIN,
         }
 
-# Like the above, but required.
+# Like server_option, but required.
 server_arg = {
         'name'         : 'server',
         'type'         : str,
@@ -1321,6 +1401,22 @@ bot_commands = {
             'require_guild' : True,
             'access_level'  : AccessLevel.SERVER_ADMIN,
             'function'      : bot_removemodrole_command,
+            'args'          : [ server_option ],
+    },
+    'textfilter' : {
+            'access_level'  : AccessLevel.SERVER_MOD,
+            'function'      : bot_textfilter_command,
+            'args'          : [
+                server_option,
+                { 'name'      : 'filter',
+                  'type'      : str,
+                  'nargs'     : '?',
+                  'aggregate' : True},
+                ],
+    },
+    'removetextfilter' : {
+            'access_level'  : AccessLevel.SERVER_MOD,
+            'function'      : bot_removetextfilter_command,
             'args'          : [ server_option ],
     },
 
