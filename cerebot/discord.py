@@ -441,6 +441,8 @@ class DiscordManager(discord.Client):
     def __init__(self, conf, bot_db, dcss_manager, *args, **kwargs):
         intents = discord.Intents.default()
         intents.members = True
+        intents.presences = True
+
         super().__init__(*args, intents=intents, **kwargs)
 
         self.service = 'Discord'
