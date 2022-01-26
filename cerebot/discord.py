@@ -12,7 +12,7 @@ import sys
 import time
 import traceback
 
-from beem.chat import ChatWatcher, BotCommandException, bot_help_command
+from beem.chat import ChatWatcher, BotCommandException
 from beem.chat import ACCESS_BOT_ADMIN, toggle_arg
 
 from .version import version as Version
@@ -887,6 +887,14 @@ async def bot_say_command(source, requester, args):
     """!say chat command"""
 
     await args.channel.send(source.filter_text(args.message))
+
+async def bot_help_command(source, requester, args):
+    """!help bot command"""
+
+    help_text = source.manager.conf['help_text']
+    help_text = help_text.replace('\n', ' ')
+    help_text = help_text.replace('%n', source.get_chat_name(source.login_user))
+    await source.channel.send(source.filter_text(help_text))
 
 def center_string_in_line(string, line):
     len_line = len(line)
