@@ -1220,7 +1220,7 @@ async def bot_setmodrole_command(source, requester, args):
             f"been set to role {args.role.name}.")
 
 async def bot_removemodrole_command(source, requester, args):
-    """!setmodrole chat command"""
+    """!removemodrole chat command"""
 
     mgr = source.manager
     server_data = mgr.bot_db.get_server_data(args.server.id, True)
