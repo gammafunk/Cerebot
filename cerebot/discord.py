@@ -442,6 +442,7 @@ class DiscordManager(discord.Client):
         intents = discord.Intents.default()
         intents.members = True
         intents.presences = True
+        intents.message_content = True
 
         super().__init__(*args, intents=intents, **kwargs)
 
@@ -581,7 +582,7 @@ class DiscordManager(discord.Client):
 
         await source.read_chat(message.author, message.content)
 
-    async def on_member_update(self, before, after):
+    async def on_presence_update(self, before, after):
         """Handle Discord member state changes. Currently only used to set a
         "streaming" role."""
 
@@ -829,7 +830,7 @@ async def bot_glasses_command(source, requester, args):
 
     message = await source.channel.send('( •_•)')
     await asyncio.sleep(0.5)
-    await message.edit(content='( •_•)>⌐■-■')
+    message = await message.edit(content='( •_•)>⌐■-■')
     await asyncio.sleep(0.5)
     await message.edit(content='(⌐■_■)')
 
@@ -849,7 +850,7 @@ async def bot_deal_command(source, requester, args):
 
     for i in range(3):
         msg = '\n'.join(lines[:i] + [glasses] + lines[i + 1:])
-        await message.edit(content=f"```{msg}```")
+        message = await message.edit(content=f"```{msg}```")
         await asyncio.sleep(0.5)
 
     await message.edit(content="```{}```".format(
@@ -864,7 +865,7 @@ async def bot_dance_command(source, requester, args):
 
     for n in range(2):
         for f in figures[0 if n else 1:]:
-            await message.edit(content=f)
+            message = await message.edit(content=f)
             await asyncio.sleep(0.25)
 
     await message.edit(content=figures[0])
@@ -878,7 +879,7 @@ async def bot_botdance_command(source, requester, args):
 
     for n in range(2):
         for f in figures[0 if n else 1:]:
-            await message.edit(content=f)
+            message = await message.edit(content=f)
             await asyncio.sleep(0.25)
 
     await message.edit(content=figures[0])
@@ -959,7 +960,7 @@ async def bot_firestorm_command(source, requester, args):
 
     for r in range(1, 5, 2):
         explosion = render_firestorm_explosion(floor_lines, r)
-        await message.edit(content="```\n{}```".format('\n'.join(explosion)))
+        message = await message.edit(content="```\n{}```".format('\n'.join(explosion)))
         await asyncio.sleep(0.2)
 
     await asyncio.sleep(0.6)
@@ -975,7 +976,7 @@ async def bot_firestorm_command(source, requester, args):
             for c in coords:
                 lines[n] = lines[n][:4 + c] + 'v' + lines[n][4 + c + 1:]
 
-        await message.edit(content="```\n{}```".format('\n'.join(lines)))
+        message = await message.edit(content="```\n{}```".format('\n'.join(lines)))
         await asyncio.sleep(0.8)
 
 def render_glaciate_explosion(lines, radius):
@@ -1022,7 +1023,7 @@ async def bot_glaciate_command(source, requester, args):
 
     for r in range(1, 8, 2):
         explosion = render_glaciate_explosion(floor_lines, r)
-        await message.edit(content="```\n{}```".format('\n'.join(explosion)))
+        message = await message.edit(content="```\n{}```".format('\n'.join(explosion)))
         await asyncio.sleep(0.2)
 
     blasted = args.target
