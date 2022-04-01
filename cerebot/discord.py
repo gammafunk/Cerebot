@@ -64,10 +64,7 @@ class DiscordSource(ChatWatcher):
         super().__init__(*args, **kwargs)
 
         self.manager = manager
-
-        # The discord channel object this source is tied to.
         self.channel = channel
-        self.source_type_desc = "channel"
 
         # Time since any message was last seen in the channel, used for the
         # Discord manager cache of these objects.
