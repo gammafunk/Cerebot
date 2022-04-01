@@ -461,6 +461,16 @@ class DiscordManager(discord.Client):
     def describe(self):
         return "Discord"
 
+    def log_error(self, error_msg, *, trace=False):
+        """Log an error, possibly with the traceback of an associated
+        exception."""
+
+        _log.error(f"{self.describe()}: Error: {error_msg}")
+        if trace:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            _log.error(":{}".format("".join(traceback.format_exception(
+                exc_type, exc_value, exc_tb))))
+
     def update_allowed_servers(self):
         self.allowed_servers = set()
         self.allowed_pm = {}
@@ -468,14 +478,6 @@ class DiscordManager(discord.Client):
             server_data = self.bot_db.get_server_data(g.id)
             if server_data and server_data['allowed']:
                 self.allowed_servers.add(g.id)
-
-    def log_error(self, error_msg):
-        """Log an exception and the associated traceback."""
-
-        exc_type, exc_value, exc_tb = sys.exc_info()
-        _log.error(f"{self.describe()}: Error: {error_msg}:")
-        _log.error("".join(traceback.format_exception(
-            exc_type, exc_value, exc_tb)))
 
     def update_text_filters(self):
         """Update the per-server list of text filter compiled regular
@@ -639,7 +641,7 @@ class DiscordManager(discord.Client):
             await self.close()
 
         except Exception:
-            self.log_error("Error when disconnecting")
+            self.log_error("Error when disconnecting", True)
 
         self.shutdown = shutdown
 
