@@ -507,17 +507,18 @@ class DiscordManager(discord.Client):
                 filters.append(re.compile(re.escape(t.strip()), re.IGNORECASE))
             self.text_filters[g.id] = filters
 
-    def get_channel_source(self, channel):
-        """Get the source object of the given discord channel object."""
+    def get_source(self, channel_id):
+        """Get the DiscordSource object of the given discord channel id. The
+        source is created if it doesn't exist."""
 
         for s in self.sources:
-            if s.channel == channel:
+            if s.channel.id == channel_id:
                 return s
 
         return
 
-    def expire_idle_channels(self, current_time):
-        """Remove the cached source object for any channels that have been idle
+    def expire_idle_sources(self, current_time):
+        """Remove the cached source object for any sources that have been idle
         for too long."""
 
         for c in list(self.sources):
@@ -526,15 +527,6 @@ class DiscordManager(discord.Client):
 
             if current_time - c.time_last_message >= _channel_idle_timeout:
                 self.sources.remove(c)
-
-    def make_channel_source(self, channel):
-
-        source = self.get_channel_source(channel)
-        if not source:
-            source = DiscordSource(self, channel)
-            self.sources.add(source)
-
-        return source
 
     async def on_ready(self):
         """Handle anything that needs to be done only after Discord is fully
@@ -577,17 +569,20 @@ class DiscordManager(discord.Client):
                             allowed = True
                             break
 
-                self.allowed_pm[message.author.id] = allowed
+                self.allowed_dm[message.author.id] = allowed
 
         if not allowed:
             return
 
         current_time = time.time()
-        self.expire_idle_channels(current_time)
+        self.expire_idle_sources(current_time)
 
-        source = self.make_channel_source(message.channel)
+        source = self.get_source(message.channel.id)
+        if not source:
+            source = DiscordSource(self, message.channel)
+            self.sources.add(source)
+
         source.time_last_message = current_time
-
         await source.read_chat(message.author, message.content)
 
     async def on_presence_update(self, before, after):
@@ -620,13 +615,9 @@ class DiscordManager(discord.Client):
 
     def get_source_by_ident(self, source_ident):
         """Given an 'identity' key tuple identifying a source, return the
-        source object."""
+        source channel."""
 
-        channel = self.get_channel(source_ident['id'])
-        if not channel:
-            return None
-
-        return self.get_channel_source(channel)
+        return self.get_source(source_ident['id'])
 
     async def start(self):
         """Set the discord login token an connect, processing discord events
