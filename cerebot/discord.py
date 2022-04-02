@@ -73,10 +73,10 @@ class DiscordSource(ChatWatcher):
         # Dict of recent chatters with users as keys and timestamp as values.
         self.chatters = {}
 
-    # Set to the bot only if we're in PM, otherwise None.
+    # Set to the bot only if we're in a private channel, otherwise None.
     @property
     def user(self):
-        if isinstance(self.channel, discord.abc.PrivateChannel):
+        if self.is_private:
             return self.login_user
         else:
             return None
@@ -85,17 +85,24 @@ class DiscordSource(ChatWatcher):
     def login_user(self):
         return self.manager.user
 
+    @property
+    def is_private(self):
+        return isinstance(self.channel, discord.abc.PrivateChannel)
+
     def describe(self):
-        channel_name = None
-        if isinstance(self.channel, discord.abc.PrivateChannel):
-            channel_name = f'PM:{self.channel.id}'
+        name = self.channel.id
+        if self.is_private:
+            if self.channel.recipient:
+                name = self.channel.recipient
+            return f'DM:{name}'
         else:
-            channel_name = f'{self.channel.guild.name}:#{self.channel.name}'
-        return channel_name
+            name = self.channel.name
+            return f'{self.channel.guild.name}:#{name}'
 
     def should_limit_sequell_lines(self, sender):
-        """We allow unlimited response lines for a single command in PM."""
-        return isinstance(self.channel, discord.abc.GuildChannel)
+        """We allow unlimited response lines for a single command in private
+        channels."""
+        return not self.is_private
 
     def get_chat_name(self, user, sanitize=False):
         return super().get_chat_name(user.name, sanitize)
@@ -140,7 +147,7 @@ class DiscordSource(ChatWatcher):
         with the !addrole bot command."""
 
         # We must be associated with a guild.
-        if isinstance(self.channel, discord.abc.PrivateChannel):
+        if self.is_private:
             return
 
         guild = self.channel.guild
@@ -181,7 +188,7 @@ class DiscordSource(ChatWatcher):
         the !addfaction bot command."""
 
         # We must be associated with a guild.
-        if isinstance(self.channel, discord.abc.PrivateChannel):
+        if self.is_private:
             return
 
         guild = self.channel.guild
@@ -216,8 +223,11 @@ class DiscordSource(ChatWatcher):
         """Censor any text according to our list of text filters, replacing
         each match with the text [censored]."""
 
-        if (isinstance(self.channel, discord.abc.PrivateChannel)
-                or self.channel.guild.id not in self.manager.text_filters):
+        # Messages in private channels are unfiltered.
+        if self.is_private:
+            return message
+
+        if self.channel.guild.id not in self.manager.text_filters:
             return message
 
         result = message
@@ -298,7 +308,7 @@ class DiscordSource(ChatWatcher):
                     f"{desc} '{search}' is ambiguous")
 
         dest_server = None
-        if isinstance(self.channel, discord.abc.GuildChannel):
+        if not self.is_private:
             dest_server = self.channel.guild
 
         vargs = vars(args)
@@ -385,8 +395,7 @@ class DiscordSource(ChatWatcher):
 
         super().check_bot_command(user, entry)
 
-        if (entry.get('require_guild')
-                and isinstance(self.channel, discord.abc.PrivateChannel)):
+        if entry.get('require_guild') and self.is_private:
             raise BotCommandException(
                     "This command must be run in a server channel.")
 
@@ -453,7 +462,7 @@ class DiscordManager(discord.Client):
         self.shutdown = False
         self.sources = set()
         self.allowed_servers = set()
-        self.allowed_pm = {}
+        self.allowed_dm = {}
 
         self.dcss_manager = dcss_manager
         dcss_manager.managers[self.service] = self
@@ -473,7 +482,7 @@ class DiscordManager(discord.Client):
 
     def update_allowed_servers(self):
         self.allowed_servers = set()
-        self.allowed_pm = {}
+        self.allowed_dm = {}
         for g in self.guilds:
             server_data = self.bot_db.get_server_data(g.id)
             if server_data and server_data['allowed']:
@@ -538,7 +547,7 @@ class DiscordManager(discord.Client):
         if (appinfo.owner
                 and not self.bot_db.get_user_data(appinfo.owner.id)['admin']):
             self.bot_db.set_user_field(appinfo.owner.id, 'admin', True)
-            self.allowed_pm[appinfo.owner.id] = True
+            self.allowed_dm[appinfo.owner.id] = True
 
     async def on_message(self, message):
         """Handle a Discord chat message."""
@@ -551,13 +560,13 @@ class DiscordManager(discord.Client):
         if (isinstance(message.channel, discord.abc.GuildChannel)
                 and message.channel.guild.id in self.allowed_servers):
             allowed = True
-        # Users are allowed to PM the bot if they're in an allowed server.
+        # Users are allowed to DM the bot if they're in an allowed server.
         # Cache this lookup for future messages.
         elif isinstance(message.channel, discord.abc.PrivateChannel):
-            if message.author.id in self.allowed_pm:
-                allowed = self.allowed_pm[message.author.id]
+            if message.author.id in self.allowed_dm:
+                allowed = self.allowed_dm[message.author.id]
             else:
-                # Admins are always allowed to PM.
+                # Admins are always allowed to DM.
                 if self.bot_db.get_user_data(message.author.id)['admin']:
                     allowed = True
                 else:
