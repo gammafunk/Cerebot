@@ -749,10 +749,9 @@ async def bot_botstatus_command(source, requester, args):
     """!botstatus chat command"""
 
     names = []
-    for s in source.manager.guilds:
-        if s in source.manager.allowed_servers:
-            s = source.manager.get_guild(s)
-            names.append(s.name)
+    for g in source.manager.guilds:
+        if g.id in source.manager.allowed_servers:
+            names.append(g.name)
     await source.send_chat(f"Version: {Version}; Listening to servers: "
             f"{', '.join(sorted(names))}")
 
