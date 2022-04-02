@@ -1478,10 +1478,12 @@ bot_commands = {
 
     # Joke commands
     'glasses' : {
+        'access_level'  : AccessLevel.SERVER_MOD,
         'require_guild' : True,
         'function'      : bot_glasses_command,
     },
     'deal' : {
+        'access_level'  : AccessLevel.SERVER_MOD,
         'require_guild' : True,
         'function'      : bot_deal_command,
     },
@@ -1503,11 +1505,13 @@ bot_commands = {
         ],
     },
     'firestorm' : {
+        'access_level'  : AccessLevel.SERVER_MOD,
         'require_guild' : True,
         'function'      : bot_firestorm_command,
         'args'          : [ target_arg ],
     },
     'glaciate' : {
+        'access_level'  : AccessLevel.SERVER_MOD,
         'require_guild' : True,
         'function'      : bot_glaciate_command,
         'args'          : [ target_arg ],
@@ -1530,6 +1534,7 @@ bot_commands = {
         ],
     },
     'pregen' : {
+        'access_level'  : AccessLevel.SERVER_MOD,
         'require_guild' : True,
         'function'      : bot_pregen_command,
         'args'          : [ target_arg ],
