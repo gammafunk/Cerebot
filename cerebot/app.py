@@ -50,7 +50,8 @@ class Cerebot:
         self.dcss_manager = DCSSManager(self.conf.dcss)
 
         self.discord_task = None
-        self.discord_manager = None
+        self.discord_manager = DiscordManager(self.conf.discord,
+                self.bot_db, self.dcss_manager)
 
     def critical_error(self, error_msg):
         exc_type, exc_value, exc_tb = sys.exc_info()
@@ -67,7 +68,7 @@ class Cerebot:
 
         def do_exit(signame):
             is_error = True if signame == "SIGTERM" else False
-            msg = f"Shutting down bot due to signal: {signame}"
+            msg = f"Shutting bot down due to signal: {signame}"
 
             if is_error:
                 _log.error(msg)
@@ -79,7 +80,7 @@ class Cerebot:
             self.loop.add_signal_handler(getattr(signal, signame),
                                            functools.partial(do_exit, signame))
 
-        print("Event loop running forever, press Ctrl+C to interrupt.")
+        print("Bot event loop running, press Ctrl+C to interrupt.")
         print(f"Process ID {os.getpid()}: send SIGINT or SIGTERM to exit.")
 
         try:
@@ -102,35 +103,21 @@ class Cerebot:
             self.dcss_task.cancel()
 
         if self.discord_task and not self.discord_task.done():
-            asyncio.ensure_future(self.discord_manager.disconnect(True))
+            asyncio.ensure_future(self.discord_manager.stop())
 
     async def process(self):
 
+        tasks = []
         # This task is never restarted.
         self.dcss_task = asyncio.ensure_future(self.dcss_manager.start())
+        tasks.append(self.dcss_task)
 
-        while True:
+        self.discord_task = asyncio.ensure_future(
+                self.discord_manager.start())
+        tasks.append(self.discord_task)
 
-            # Discord manager initial setup or it is reconnecting.
-            if not self.discord_manager or not self.discord_manager.shutdown:
-                # Let the current task finish.
-                if self.discord_task and not self.discord_task.done():
-                    await self.discord_task
+        await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
 
-                # We re-instantiate the manager and create a new websocket.
-                self.discord_manager = DiscordManager(self.conf.discord,
-                        self.bot_db, self.dcss_manager)
-                self.discord_task = asyncio.ensure_future(
-                        self.discord_manager.start())
-
-            await asyncio.wait([self.dcss_task, self.discord_task],
-                    return_when=asyncio.FIRST_COMPLETED)
-
-            # We are shutting down the bot.
-            if self.dcss_task.done():
-                if self.discord_task and not self.discord_task.done():
-                    await self.discord_task
-                return
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

@@ -623,27 +623,74 @@ class DiscordManager(discord.Client):
         """Set the discord login token an connect, processing discord events
         indefinitely."""
 
-        try:
-            await self.login(self.conf['token'])
-            await self.connect()
-        except Exception:
-            self.log_error("Error when attempting connection")
-            await asyncio.sleep(_reconnect_timeout)
+        self.logged_in = False
 
-    async def disconnect(self, shutdown=False):
-        """Disconnect from Discord. This will log any disconnection error, but
-        never raise."""
+        _log.info("Starting Discord manager.")
+
+        while True:
+            if self.shutdown or self.logged_in:
+                break
+
+            retry = False
+            try:
+                await self.login(self.conf['token'])
+                self.logged_in = True
+
+            except discord.LoginFailure:
+                self.log_error(
+                        "Login failure: Token not accepted. Shutting down.")
+                os.kill(os.getpid(), signal.SIGTERM)
+
+            except discord.HTTPException as e:
+                if e.text:
+                    msg = e.text
+                else:
+                    msg = f"status: {e.status}, Discord code: {e.code}"
+                self.log_error(f"Login failure: HTTP error: {msg}")
+                retry = True
+
+            except Exception as e:
+                self.log_error(f"Login failure: {e}")
+                retry = True
+
+            finally:
+                if retry:
+                    await asyncio.sleep(_reconnect_timeout)
+
+        if self.shutdown or not self.logged_in:
+            return
+
+        try:
+            await self.connect()
+
+        except discord.GatewayNotFound:
+            self.log_error(f"Connection failure: Gateway not found")
+            retry = True
+
+        except discord.ConnectionClosed as e:
+            self.log_error(f"Connection failure: Connection closed: "
+                    "Code: {e.code}, Reason: {e.reason}")
+            retry = True
+
+        except:
+            self.log_error("Connection failure", trace=True)
+            retry = True
+
+        finally:
+            if retry:
+                self.clear()
+                await asyncio.sleep(_reconnect_timeout)
+
+
+    async def stop(self):
+        """Disconnect from Discord and stop the manager."""
 
         if self.conf.get('fake_connect') or self.is_closed():
             return
 
-        try:
-            await self.close()
-
-        except Exception:
-            self.log_error("Error when disconnecting", True)
-
-        self.shutdown = shutdown
+        await self.close()
+        self.clear()
+        self.shutdown = True
 
 # Discord database tables and field definitions.
 db_tables = {
