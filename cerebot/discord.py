@@ -326,7 +326,7 @@ class DiscordSource(ChatWatcher):
                     match = dest_server.get_member_named(args.user)
                 if not match:
                     raise BotCommandException(
-                            f"Can't find a user match with '{args.user}'")
+                            f"Can't find a user match for '{args.user}'")
                 else:
                     args.user = match
             else:
@@ -368,8 +368,8 @@ class DiscordSource(ChatWatcher):
 
 
     def user_access_level(self, user):
-        """Return True if the user is a bot admin in the given channel by our
-        configuration."""
+        """Returns the AccessLevel of the given user considering the channel of
+        this source."""
 
         user_data = self.manager.bot_db.get_user_data(user.id)
         if user_data['admin']:
@@ -508,8 +508,7 @@ class DiscordManager(discord.Client):
             self.text_filters[g.id] = filters
 
     def get_source(self, channel_id):
-        """Get the DiscordSource object of the given discord channel id. The
-        source is created if it doesn't exist."""
+        """Get the DiscordSource object of the given discord channel id."""
 
         for s in self.sources:
             if s.channel.id == channel_id:
@@ -650,7 +649,7 @@ class DiscordManager(discord.Client):
                 retry = True
 
             except Exception as e:
-                self.log_error(f"Login failure: {e}")
+                self.log_error(f"Login failure: {e}", trace=True)
                 retry = True
 
             finally:
@@ -664,7 +663,7 @@ class DiscordManager(discord.Client):
             await self.connect()
 
         except discord.GatewayNotFound:
-            self.log_error(f"Connection failure: Gateway not found")
+            self.log_error(f"Connection failure: Gateway not found.")
             retry = True
 
         except discord.ConnectionClosed as e:
@@ -1250,7 +1249,6 @@ async def bot_allowserver_command(source, requester, args):
     """!allowserver chat command"""
 
     mgr = source.manager
-    server_data = mgr.bot_db.get_server_data(args.server.id)
     mgr.bot_db.set_server_field(args.server.id, 'allowed', True)
     mgr.update_allowed_servers()
     await source.send_chat(f"Server {args.server.name} has been allowed.")
@@ -1259,7 +1257,6 @@ async def bot_disallowserver_command(source, requester, args):
     """!disallowserver chat command"""
 
     mgr = source.manager
-    server_data = mgr.bot_db.get_server_data(args.server.id)
     mgr.bot_db.set_server_field(args.server.id, 'allowed', False)
     mgr.update_allowed_servers()
     await source.send_chat(f"Server {args.server.name} has been disallowed.")
@@ -1268,7 +1265,6 @@ async def bot_setmodrole_command(source, requester, args):
     """!setmodrole chat command"""
 
     mgr = source.manager
-    server_data = mgr.bot_db.get_server_data(args.server.id, True)
     mgr.bot_db.set_server_field(args.server.id, 'moderator_role', args.role.id)
     await source.send_chat(f"Moderator role for server {args.server.name} has "
             f"been set to role {args.role.name}.")
@@ -1339,8 +1335,6 @@ user_option = {
 server_user_option = user_option.copy()
 server_user_option['access_level'] = AccessLevel.SERVER_MOD
 
-# An optional user argument that can be used by anyone
-
 # Designate an optional target server for an across-server command. Requires
 # bot admin.
 server_option = {
@@ -1384,9 +1378,7 @@ target_arg = {
 
 # Discord bot commands
 bot_commands = {
-    'listcommands' : {
-        'function' : bot_listcommands_command,
-    },
+    # Bot admin commands.
     'botstatus' : {
         'access_level' : AccessLevel.BOT_ADMIN,
         'function'     : bot_botstatus_command,
@@ -1395,6 +1387,52 @@ bot_commands = {
         'access_level' : AccessLevel.BOT_ADMIN,
         'function'     : bot_debugmode_command,
         'args'         : [ toggle_arg ],
+        'logged'       : True,
+    },
+    'allowserver' : {
+        'access_level' : AccessLevel.BOT_ADMIN,
+        'function'     : bot_allowserver_command,
+        'args'         : [ server_arg ],
+    },
+    'disallowserver' : {
+        'access_level' : AccessLevel.BOT_ADMIN,
+        'function'     : bot_disallowserver_command,
+        'args'         : [ server_arg ],
+    },
+
+    # Server admin commands.
+    'setmodrole' : {
+        'require_guild' : True,
+        'access_level'  : AccessLevel.SERVER_ADMIN,
+        'function'      : bot_setmodrole_command,
+        'args'          : [ server_option, role_arg ],
+    },
+    'removemodrole' : {
+        'require_guild' : True,
+        'access_level'  : AccessLevel.SERVER_ADMIN,
+        'function'      : bot_removemodrole_command,
+        'args'          : [ server_option ],
+    },
+    'textfilter' : {
+        'access_level'  : AccessLevel.SERVER_MOD,
+        'function'      : bot_textfilter_command,
+        'args'          : [
+            server_option,
+            { 'name'      : 'filter',
+              'type'      : str,
+              'nargs'     : '?',
+              'aggregate' : True},
+            ],
+    },
+    'removetextfilter' : {
+        'access_level'  : AccessLevel.SERVER_MOD,
+        'function'      : bot_removetextfilter_command,
+        'args'          : [ server_option ],
+    },
+
+    # User-level commands.
+    'listcommands' : {
+        'function' : bot_listcommands_command,
     },
     'bothelp' : {
         'function' : bot_help_command,
@@ -1436,44 +1474,6 @@ bot_commands = {
             user_option,
             { 'name' : 'nick', 'type' : str, 'nargs' : '?', 'default' : None },
             ],
-    },
-    'allowserver' : {
-            'access_level' : AccessLevel.BOT_ADMIN,
-            'function'     : bot_allowserver_command,
-            'args'         : [ server_arg ],
-    },
-    'disallowserver' : {
-            'access_level' : AccessLevel.BOT_ADMIN,
-            'function'     : bot_disallowserver_command,
-            'args'         : [ server_arg ],
-    },
-    'setmodrole' : {
-            'require_guild' : True,
-            'access_level'  : AccessLevel.SERVER_ADMIN,
-            'function'      : bot_setmodrole_command,
-            'args'          : [ server_option, role_arg ],
-    },
-    'removemodrole' : {
-            'require_guild' : True,
-            'access_level'  : AccessLevel.SERVER_ADMIN,
-            'function'      : bot_removemodrole_command,
-            'args'          : [ server_option ],
-    },
-    'textfilter' : {
-            'access_level'  : AccessLevel.SERVER_MOD,
-            'function'      : bot_textfilter_command,
-            'args'          : [
-                server_option,
-                { 'name'      : 'filter',
-                  'type'      : str,
-                  'nargs'     : '?',
-                  'aggregate' : True},
-                ],
-    },
-    'removetextfilter' : {
-            'access_level'  : AccessLevel.SERVER_MOD,
-            'function'      : bot_removetextfilter_command,
-            'args'          : [ server_option ],
     },
 
     # Joke commands
@@ -1543,7 +1543,8 @@ bot_commands = {
         'access_level'  : AccessLevel.SERVER_MOD,
         'require_guild' : True,
         'function'      : bot_reactbomb_command,
-        'args'          : [ { 'name' : 'emote', 'type' : str, 'nargs' : '?',
-            'default' : None} ],
+        'args'          : [
+            { 'name' : 'emote', 'type' : str, 'nargs' : '?', 'default' : None},
+        ],
     },
 }
