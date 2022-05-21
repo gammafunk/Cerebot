@@ -35,6 +35,7 @@ r'[a-z\u00a1-\uffff0-9]+)*(?:\.(?:[a-z\u00a1-\uffff]{2,})))'
 r'(?::\d{2,5})?(?:/[^\s]*)?)')
 
 _emote_regexp = re.compile(r'^<:[^>]+:([0-9]+)>$')
+_channel_regexp = re.compile(r'^<#([0-9]+)>$')
 
 # String that faction roles end with.
 _faction_suffix = " Faction"
@@ -253,17 +254,28 @@ class DiscordSource(ChatWatcher):
 
         return result
 
-    def find_discord(self, iterable, search, no_match_error=True):
+    def find_discord(self, iterable, search, *, fail_error=True):
         """Find a discord object from an iterable by id, name string exact
         match, or name substring match, in order of preferance."""
 
         allow_substring = True
+        search_id = None
+        if search.isdigit():
+            search_id = int(search)
+            allow_substring = False
+
         if isinstance(iterable[0], discord.Guild):
             desc = "server"
         elif isinstance(iterable[0], discord.abc.GuildChannel):
             desc = "channel"
             # These have straightforward names and there can be a lot of them.
             allow_substring = False
+
+            if not search_id:
+                match = _channel_regexp.match(search)
+                if match:
+                    search_id = int(match.group(1))
+
         elif isinstance(iterable[0], discord.Role):
             desc = "role"
         else:
@@ -273,8 +285,11 @@ class DiscordSource(ChatWatcher):
         lsearch = search.lower()
         for i in iterable:
             # Lookup by id
-            if search.isdigit() and i.id == int(search):
-                return i
+            if search_id:
+                if i.id == search_id:
+                    return i
+                else:
+                    continue
 
             # Give exact matches priority
             if lsearch == i.name.lower():
@@ -292,7 +307,7 @@ class DiscordSource(ChatWatcher):
             else:
                 return matches.pop()
         else:
-            if no_match_error:
+            if fail_error:
                 raise BotCommandException(f"Can't find {desc} match for "
                         f"{search}")
             else:
@@ -303,7 +318,7 @@ class DiscordSource(ChatWatcher):
         the guild and channel objects for the respective 'server' and 'channel'
         arguments."""
 
-        def ambiguous_channel(search, desc):
+        def ambiguous_search(search, desc):
             raise BotCommandException("Current channel has no server, so "
                     f"{desc} '{search}' is ambiguous")
 
@@ -318,6 +333,12 @@ class DiscordSource(ChatWatcher):
                         args.server)
             args.server = dest_server
 
+            # If the 'server' option is present, we must be able to either
+            # resolve the option argument to a server or be in a server
+            # channel.
+            if not args.server:
+                raise BotCommandException("Can't determine a target server.")
+
         if 'user' in vargs:
             if args.user:
                 if args.user.isdigit():
@@ -329,38 +350,54 @@ class DiscordSource(ChatWatcher):
                             f"Can't find a user match for '{args.user}'")
                 else:
                     args.user = match
+            # The default value for 'user' is the user running the bot command.
             else:
                 args.user = user
 
         if 'channel' in vargs:
             if args.channel:
-                if not dest_server:
-                    ambiguous_channel("channel name", args.channel)
+                if dest_server:
+                    match = self.find_discord(dest_server.channels,
+                            args.channel)
+                elif args.channel.isdigit():
+                    match = self.manager.get_channel(int(args.channel))
+                else:
+                    ambiguous_search("channel name", args.channel)
 
-                args.channel = self.find_discord(dest_server.channels,
-                        args.channel)
-            else:
+                if (not match
+                        or not isinstance(match, discord.TextChannel)):
+                    raise BotCommandException(
+                            f"Can't find a text channel match for '{args.channel}'")
+                else:
+                    args.channel = match
+            elif isinstance(self.parent_channel, discord.TextChannel):
                 args.channel = self.channel
+            # If the 'channel' option is present, we must be able to either
+            # resolve the option argument to a channel or be in a server text
+            # channel.
+            else:
+                raise BotCommandException(
+                        "Can't determine a target server channel.")
 
         if 'role' in vargs and args.role:
             if not dest_server:
-                ambiguous_channel("role search", args.role)
+                ambiguous_search("role search", args.role)
 
             args.role = self.find_discord(dest_server.roles, args.role)
 
         if 'managed_role' in vargs and args.managed_role:
             if not dest_server:
-                ambiguous_channel("role search", args.managed_role)
+                ambiguous_search("role search", args.managed_role)
 
             args.managed_role = self.find_discord(self.get_managed_roles(),
                     args.managed_role)
 
         if 'faction_role' in vargs and args.faction_role:
             if not dest_server:
-                ambiguous_channel("role search", args.faction_role)
+                ambiguous_search("role search", args.faction_role)
 
             match = self.find_discord(self.get_managed_roles(),
-                    args.faction_role, False)
+                    args.faction_role, fail_error=False)
             if match:
                 args.faction_role = args.faction_role + _faction_suffix
             args.faction_role = self.find_discord(self.get_faction_roles(),
@@ -1281,10 +1318,6 @@ async def bot_removemodrole_command(source, requester, args):
 async def bot_textfilter_command(source, requester, args):
     """!textfilter chat command"""
 
-    if not args.server:
-        raise BotCommandException("This is a private channel and no server is "
-                "specified.")
-
     mgr = source.manager
     server_data = mgr.bot_db.get_server_data(args.server.id)
     if not args.filter:
@@ -1308,10 +1341,6 @@ async def bot_textfilter_command(source, requester, args):
 
 async def bot_removetextfilter_command(source, requester, args):
     """!removetextfilter chat command"""
-
-    if not args.server:
-        raise BotCommandException("This is a private channel and no server is "
-                "specified.")
 
     source.manager.bot_db.set_server_field(args.server.id, 'text_filter', '')
     source.manager.update_text_filters()
