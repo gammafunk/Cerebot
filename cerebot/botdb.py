@@ -30,5 +30,23 @@ class CerebotDB(BotDB):
         return self.get_row('discord_servers', [server_id], default)
 
     def set_server_field(self, server_id, field, value, create=True):
+        """Set the given field to the given value in the server table for the
+        given server. The database and server cache are both updated, and the
+        server cache entry is returned. If the server doesn't exist and create
+        is True, create the user first, otherwise missing servers generate an
+        exception."""
+
         return self.set_row_field('discord_servers', [server_id], field,
+                value, create)
+
+    def get_channel_data(self, channel_id, default=False):
+        """Get the channel data of the given channel from the cache of the
+        channel table. If default is True and the channel isn't in the cache,
+        return a row of default data. If default is False, missing channels
+        generate None."""
+
+        return self.get_row('discord_channels', [channel_id], default)
+
+    def set_channel_field(self, channel_id, field, value, create=True):
+        return self.set_row_field('discord_channels', [channel_id], field,
                 value, create)

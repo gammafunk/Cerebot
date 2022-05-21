@@ -120,6 +120,19 @@ class DiscordSource(ChatWatcher):
         channels."""
         return not self.is_private
 
+    def allow_sequell_edits(self, sender):
+        """Should we allow messages from this source and sender to make Sequell
+        edits? Messages without this permission will be relayed to Sequell in
+        read-only mode. Messages in read-only mode result in an error message
+        as their response from Sequell."""
+
+        # Private channels never allow edits.
+        if self.is_private:
+            return False
+
+        return self.manager.bot_db.get_channel_data(
+                self.parent_channel.id, default=True)['allow_edits']
+
     def get_chat_name(self, user, sanitize=False):
         return super().get_chat_name(user.name, sanitize)
 
@@ -766,6 +779,16 @@ db_tables = {
              'default' : "",
             },
         ],
+        'discord_channels' : [
+            {'name'    : 'id',
+             'type'    : int,
+             'primary' : True,
+            },
+            {'name'    : 'allow_edits',
+             'type'    : bool,
+             'default' : False,
+            },
+        ],
 }
 
 # Bot command functions
@@ -1358,6 +1381,21 @@ async def bot_removetextfilter_command(source, requester, args):
     await source.send_chat(f"Text filter for server {args.server.name} has "
             "been removed.")
 
+async def bot_allowedits_command(source, requester, args):
+    """!allowedits chat command"""
+
+    mgr = source.manager
+    mgr.bot_db.set_channel_field(args.channel.id, 'allow_edits', True)
+    await source.send_chat(
+            f"Channel <#{args.channel.id}> now allows Sequell edits.")
+
+async def bot_disallowedits_command(source, requester, args):
+    """!disallowedits chat command"""
+
+    mgr = source.manager
+    mgr.bot_db.set_channel_field(args.channel.id, 'allow_edits', False)
+    await source.send_chat(
+            f"Channel <#{args.channel.id}> no longer allows Sequell edits.")
 
 # Some common arguments.
 
@@ -1400,6 +1438,14 @@ channel_option = {
         'default' : None,
         }
 
+# Like channel_option, but as an argument.
+channel_option_arg = {
+        'name'      : 'channel',
+        'type'      : str,
+        'nargs'     : '?',
+        'aggregate' : True,
+        }
+
 # Arguments for looking up discord roles. Managed and faction arguments
 role_arg = { 'name' : 'role', 'type' : str, 'aggregate' : True }
 managed_role_arg = { 'name' : 'managed_role', 'type' : str, 'metavar' : 'ROLE',
@@ -1438,6 +1484,16 @@ bot_commands = {
         'access_level' : AccessLevel.BOT_ADMIN,
         'function'     : bot_disallowserver_command,
         'args'         : [ server_arg ],
+    },
+    'allowedits' : {
+        'access_level' : AccessLevel.BOT_ADMIN,
+        'function'     : bot_allowedits_command,
+        'args'         : [ server_option, channel_option_arg ],
+    },
+    'disallowedits' : {
+        'access_level' : AccessLevel.BOT_ADMIN,
+        'function'     : bot_disallowedits_command,
+        'args'         : [ server_option, channel_option_arg ],
     },
 
     # Server admin commands.
