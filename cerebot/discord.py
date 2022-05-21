@@ -1322,8 +1322,11 @@ async def bot_textfilter_command(source, requester, args):
     server_data = mgr.bot_db.get_server_data(args.server.id)
     if not args.filter:
         if server_data['text_filter']:
-            terms = ','.join([t[0] + "*" * len(t[1:])
-                for t in server_data['text_filter'].split(',')])
+            if source.is_private:
+                terms = server_data['text_filter']
+            else:
+                terms = ','.join([t[0] + "*" * len(t[1:])
+                    for t in server_data['text_filter'].split(',')])
             await source.send_chat(f"Server {args.server.name} has text filter "
                     f"{terms}")
         else:
@@ -1335,9 +1338,13 @@ async def bot_textfilter_command(source, requester, args):
     terms = [t.strip().lower() for t in args.filter.split(',')]
     mgr.bot_db.set_server_field(args.server.id, 'text_filter', ','.join(terms))
     mgr.update_text_filters()
+    if source.is_private:
+        terms = server_data['text_filter']
+    else:
+        terms = ','.join([t[0] + "*" * len(t[1:])
+            for t in server_data['text_filter'].split(',')])
     await source.send_chat(
-            f"Text filter for server {args.server.name} is set to "
-            "{0}".format(','.join([t[0] + "*" * len(t[1:]) for t in terms])))
+            f"Text filter for server {args.server.name} is set to {terms}")
 
 async def bot_removetextfilter_command(source, requester, args):
     """!removetextfilter chat command"""
