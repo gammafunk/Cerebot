@@ -83,12 +83,26 @@ class DiscordSource(ChatWatcher):
             return None
 
     @property
+    def parent_channel(self):
+        """The parent Discord channel of this source. If this source is a
+        thread, this gives the parent channel of the thread, otherwise it's
+        simply the ."""
+
+        if isinstance(self.channel, discord.Thread):
+            return self.manager.get_channel(self.channel.parent_id)
+
+        else:
+            return self.channel
+
+    @property
     def login_user(self):
         return self.manager.user
 
     @property
     def is_private(self):
-        return isinstance(self.channel, discord.abc.PrivateChannel)
+        """"True if the channel is a private channel, false otherwise."""
+
+        return isinstance(self.parent_channel, discord.abc.PrivateChannel)
 
     def describe(self):
         name = self.channel.id
@@ -266,7 +280,7 @@ class DiscordSource(ChatWatcher):
 
         if isinstance(iterable[0], discord.Guild):
             desc = "server"
-        elif isinstance(iterable[0], discord.abc.GuildChannel):
+        elif isinstance(iterable[0], discord.TextChannel):
             desc = "channel"
             # These have straightforward names and there can be a lot of them.
             allow_substring = False
@@ -371,7 +385,7 @@ class DiscordSource(ChatWatcher):
                 else:
                     args.channel = match
             elif isinstance(self.parent_channel, discord.TextChannel):
-                args.channel = self.channel
+                args.channel = self.parent_channel
             # If the 'channel' option is present, we must be able to either
             # resolve the option argument to a channel or be in a server text
             # channel.
@@ -412,7 +426,7 @@ class DiscordSource(ChatWatcher):
         if user_data['admin']:
             return AccessLevel.BOT_ADMIN
 
-        if not isinstance(self.channel, discord.abc.GuildChannel):
+        if not isinstance(self.parent_channel, discord.TextChannel):
             return AccessLevel.NORMAL
 
         if self.channel.permissions_for(user).administrator:
@@ -585,7 +599,8 @@ class DiscordManager(discord.Client):
             return
 
         allowed = False
-        if (isinstance(message.channel, discord.abc.GuildChannel)
+        if ((isinstance(message.channel, discord.Thread)
+            or isinstance(message.channel, discord.TextChannel))
                 and message.channel.guild.id in self.allowed_servers):
             allowed = True
         # Users are allowed to DM the bot if they're in an allowed server.
