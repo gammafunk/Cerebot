@@ -15,10 +15,10 @@ from beem.dcss import DCSSManager
 from .botdb import CerebotDB
 from .config import CerebotConfig
 from .discord import DiscordManager, db_tables
-from .version import version
+from .version import __version__
 
 ## Will be configured by Cerebot after the config is loaded.
-_log = logging.getLogger()
+_log = logging.getLogger(__name__)
 
 _DEFAULT_CONFIG_FILE = "cerebot_config.toml"
 
@@ -125,7 +125,7 @@ def main():
     parser.add_argument("-c", dest="config_file", metavar="<toml-file>",
                         default=_DEFAULT_CONFIG_FILE,
                         help="bot config file.")
-    parser.add_argument("--version", action="version", version=version)
+    parser.add_argument("--version", action="version", version=__version__)
     args = parser.parse_args()
 
     bot = Cerebot(args.config_file)

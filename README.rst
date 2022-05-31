@@ -22,14 +22,12 @@ an event loop with concurrent tasks.
 Installation
 ~~~~~~~~~~~~
 
-The following are required:
+Python 3.8 is required, as are the following additional modules:
 
--  Python 3.5 or later
--  asyncio module (3.4.3 tested)
--  irc module (13.1 tested)
--  pytoml module (0.1.5 tested)
--  discord module (0.16 tested)
--  `beem <https://github.com/gammafunk/beem>`__ module
+-  irc (20.0 tested)
+-  pytoml (0.1.21 tested)
+-  discord (2.0 or later)
+-  `beem <https://github.com/gammafunk/beem>`__
 
 All packages above except *beem* are available in PyPI. You can install
 *beem* directly from its github repository using pip3. For example:

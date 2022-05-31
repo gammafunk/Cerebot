@@ -15,9 +15,9 @@ import traceback
 from beem.chat import ChatWatcher, BotCommandException
 from beem.chat import ACCESS_BOT_ADMIN, toggle_arg
 
-from .version import version as Version
+from .version import __version__
 
-_log = logging.getLogger()
+_log = logging.getLogger(__name__)
 
 class AccessLevel(enum.IntEnum):
     NORMAL       = 0
@@ -50,7 +50,7 @@ _chatter_idle_timeout = 60 * 60
 
 # How long to wait after a connection failure before reattempting the
 # connection.
-_reconnect_timeout = 5
+_reconnect_timeout = 10
 
 class DiscordSource(ChatWatcher):
     """The channel source object that handles chat for any kind of discord
@@ -78,7 +78,7 @@ class DiscordSource(ChatWatcher):
     @property
     def user(self):
         if self.is_private:
-            return self.login_user
+            return self.username
         else:
             return None
 
@@ -95,7 +95,7 @@ class DiscordSource(ChatWatcher):
             return self.channel
 
     @property
-    def login_user(self):
+    def username(self):
         return self.manager.user
 
     @property
@@ -104,7 +104,8 @@ class DiscordSource(ChatWatcher):
 
         return isinstance(self.parent_channel, discord.abc.PrivateChannel)
 
-    def describe(self):
+    @property
+    def description(self):
         name = self.channel.id
         if self.is_private:
             if self.channel.recipient:
@@ -504,13 +505,14 @@ class DiscordManager(discord.Client):
         super().__init__(*args, intents=intents, **kwargs)
 
         self.service = 'Discord'
+        self.description = 'Discord'
+
         self.conf = conf
-
         self.bot_db = bot_db
-
         self.bot_commands = bot_commands
 
-        self.shutdown = False
+        self.wait_task = None
+        self.stopping = False
         self.sources = set()
         self.allowed_servers = set()
         self.allowed_dm = {}
@@ -518,18 +520,24 @@ class DiscordManager(discord.Client):
         self.dcss_manager = dcss_manager
         dcss_manager.managers[self.service] = self
 
-    def describe(self):
-        return "Discord"
+    def log_info(self, message, *, debug=False):
+        """Log an informational message."""
 
-    def log_error(self, error_msg, *, trace=False):
+        message = f"{self.description}: {message}"
+        if debug:
+            _log.debug(message)
+        else:
+            _log.info(message)
+
+    def log_error(self, message, *, trace=False):
         """Log an error, possibly with the traceback of an associated
         exception."""
 
-        _log.error(f"{self.describe()}: Error: {error_msg}")
+        _log.error(f"{self.description}: Error: {message}")
         if trace:
             exc_type, exc_value, exc_tb = sys.exc_info()
-            _log.error(":{}".format("".join(traceback.format_exception(
-                exc_type, exc_value, exc_tb))))
+            _log.error("".join(traceback.format_exception(
+                exc_type, exc_value, exc_tb)))
 
     def update_allowed_servers(self):
         self.allowed_servers = set()
@@ -657,12 +665,12 @@ class DiscordManager(discord.Client):
 
         if streaming and streaming_role not in after.roles:
             await after.add_roles(streaming_role)
-            _log.info("Gave user %s on server %s streaming role", after,
-                    after.guild)
+            self.log_info(f"Gave user {after} on server {after.guild} "
+                    "streaming role")
         elif not streaming and streaming_role in after.roles:
             await after.remove_roles(streaming_role)
-            _log.info("Removed streaming role for user %s on server %s", after,
-                    after.guild)
+            self.log_info("Removed streaming role for user {after} on server "
+                    f"{after.guild}")
 
     def get_source_by_ident(self, source_ident):
         """Given an 'identity' key tuple identifying a source, return the
@@ -674,18 +682,26 @@ class DiscordManager(discord.Client):
         """Set the discord login token an connect, processing discord events
         indefinitely."""
 
-        self.logged_in = False
+        self.log_info("Starting manager.")
 
-        _log.info("Starting Discord manager.")
-
+        need_wait = False
         while True:
-            if self.shutdown or self.logged_in:
-                break
 
-            retry = False
+            if self.stopping:
+                return
+
+            if need_wait:
+                self.wait_task = asyncio.ensure_future(
+                        asyncio.sleep(_reconnect_timeout))
+
+                try:
+                    await self.wait_task
+
+                except asyncio.CancelledError:
+                    return
+
             try:
-                await self.login(self.conf['token'])
-                self.logged_in = True
+                await super().start(self.conf['token'])
 
             except discord.LoginFailure:
                 self.log_error(
@@ -698,50 +714,23 @@ class DiscordManager(discord.Client):
                 else:
                     msg = f"status: {e.status}, Discord code: {e.code}"
                 self.log_error(f"Login failure: HTTP error: {msg}")
-                retry = True
+                need_wait = True
 
             except Exception as e:
-                self.log_error(f"Login failure: {e}", trace=True)
-                retry = True
-
-            finally:
-                if retry:
-                    await asyncio.sleep(_reconnect_timeout)
-
-        if self.shutdown or not self.logged_in:
-            return
-
-        try:
-            await self.connect()
-
-        except discord.GatewayNotFound:
-            self.log_error(f"Connection failure: Gateway not found.")
-            retry = True
-
-        except discord.ConnectionClosed as e:
-            self.log_error(f"Connection failure: Connection closed: "
-                    "Code: {e.code}, Reason: {e.reason}")
-            retry = True
-
-        except:
-            self.log_error("Connection failure", trace=True)
-            retry = True
-
-        finally:
-            if retry:
-                self.clear()
-                await asyncio.sleep(_reconnect_timeout)
-
+                self.log_error(f"Connection failure: {e.args[0]}", trace=True)
 
     async def stop(self):
         """Disconnect from Discord and stop the manager."""
 
+        if self.wait_task and not self.wait_task.done():
+            self.wait_task.cancel()
+
         if self.conf.get('fake_connect') or self.is_closed():
             return
 
+        self.stopping = True
         await self.close()
         self.clear()
-        self.shutdown = True
 
 # Discord database tables and field definitions.
 db_tables = {
@@ -803,7 +792,7 @@ async def bot_botstatus_command(source, requester, args):
     for g in source.manager.guilds:
         if g.id in source.manager.allowed_servers:
             names.append(g.name)
-    await source.send_chat(f"Version: {Version}; Listening to servers: "
+    await source.send_chat(f"Version: {__version__}; Listening to servers: "
             f"{', '.join(sorted(names))}")
 
 async def bot_debugmode_command(source, requester, args):
@@ -990,7 +979,7 @@ async def bot_help_command(source, requester, args):
 
     help_text = source.manager.conf['help_text']
     help_text = help_text.replace('\n', ' ')
-    help_text = help_text.replace('%n', source.get_chat_name(source.login_user))
+    help_text = help_text.replace('%n', source.get_chat_name(source.username))
     await source.channel.send(source.filter_text(help_text))
 
 def center_string_in_line(string, line):

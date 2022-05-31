@@ -10,9 +10,14 @@ class CerebotConfig(BotConfig):
         has the necessary entries."""
 
         if not self.get("discord"):
-            self.error("The discord table is undefined")
+            raise Exception("The discord table is undefined")
 
         self.require_table_fields('discord', self.discord, ['token'])
+
+    def init_logging(self, name='cerebot'):
+        """Initialize the 'cerebot' logger based on the configuration data."""
+
+        super().init_logging(name)
 
     def load(self):
         """Read the main TOML configuration data from self.path and check that
@@ -21,7 +26,7 @@ class CerebotConfig(BotConfig):
         super().load()
 
         if not self.get('db_file'):
-            self.error("Field db_file undefined.")
+            raise Exception("Field db_file undefined.")
 
         self.check_dcss()
         self.check_discord()
