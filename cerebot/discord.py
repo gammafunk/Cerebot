@@ -682,7 +682,7 @@ class DiscordManager(discord.Client):
                     "streaming role")
         elif not streaming and streaming_role in after.roles:
             await after.remove_roles(streaming_role)
-            self.log_info("Removed streaming role for user {after} on server "
+            self.log_info(f"Removed streaming role for user {after} on server "
                     f"{after.guild}")
 
     def get_source_by_ident(self, source_ident):
