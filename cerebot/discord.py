@@ -711,7 +711,9 @@ class DiscordManager(discord.Client):
                     await self.wait_task
 
                 except asyncio.CancelledError:
-                    return
+                    raise
+
+            self.log_info("Starting Discord connection.")
 
             try:
                 await super().start(self.conf['token'])
@@ -729,8 +731,12 @@ class DiscordManager(discord.Client):
                 self.log_error(f"Login failure: HTTP error: {msg}")
                 need_wait = True
 
+            except asyncio.CancelledError:
+                raise
+
             except Exception as e:
-                self.log_error(f"Connection failure: {e.args[0]}", trace=True)
+                self.log_error("Failure starting Discord connection:"
+                        f" {e.args[0]}", trace=True)
 
     async def stop(self):
         """Disconnect from Discord and stop the manager."""
