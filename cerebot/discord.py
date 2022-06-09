@@ -74,14 +74,6 @@ class DiscordSource(ChatWatcher):
         # Dict of recent chatters with users as keys and timestamp as values.
         self.chatters = {}
 
-    # Set to the bot only if we're in a private channel, otherwise None.
-    @property
-    def user(self):
-        if self.is_private:
-            return self.username
-        else:
-            return None
-
     @property
     def parent_channel(self):
         """The parent Discord channel of this source. If this source is a
@@ -615,8 +607,7 @@ class DiscordManager(discord.Client):
     async def on_message(self, message):
         """Handle a Discord chat message."""
 
-        # Will be defined only if we've logged in.
-        if not self.user:
+        if not self.is_ready():
             return
 
         allowed = False
