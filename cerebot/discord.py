@@ -65,6 +65,7 @@ class DiscordSource(ChatWatcher):
         super().__init__(*args, **kwargs)
 
         self.manager = manager
+        self.logger_name = __name__
         self.channel = channel
 
         # Time since any message was last seen in the channel, used for the
@@ -825,7 +826,7 @@ async def bot_debugmode_command(source, requester, args):
         return
 
     if args.toggle == state_desc:
-        raise BotCommandException(f"DEBUG level already set to {state}")
+        raise BotCommandException(f"DEBUG level already set to {state_desc}")
 
     state_val = "DEBUG" if args.toggle == "on" else "INFO"
     _log.setLevel(state_val)
