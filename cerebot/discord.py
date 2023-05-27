@@ -36,6 +36,7 @@ r'(?::\d{2,5})?(?:/[^\s]*)?)')
 
 _emote_regexp = re.compile(r'^<:[^>]+:([0-9]+)>$')
 _channel_regexp = re.compile(r'^<#([0-9]+)>$')
+_list_markdown_regexp = re.compile(r'^([0-9]+)\.')
 
 # String that faction roles end with.
 _faction_suffix = " Faction"
@@ -272,6 +273,9 @@ class DiscordSource(ChatWatcher):
             else:
                 p = discord.utils.escape_markdown(p)
             result += p
+
+        # Escape output interpreted as a markdown ordered list.
+        result = _list_markdown_regexp.sub(r'\1\.', message)
 
         return result
 
