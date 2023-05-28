@@ -275,7 +275,7 @@ class DiscordSource(ChatWatcher):
             result += p
 
         # Escape output interpreted as a markdown ordered list.
-        result = _list_markdown_regexp.sub(r'\1\.', message)
+        result = _list_markdown_regexp.sub(r'\1\.', result)
 
         return result
 
