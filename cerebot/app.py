@@ -47,7 +47,8 @@ class Cerebot:
             self.critical_error(f"unable to load DB file {self.conf.db_file}:")
 
         self.dcss_task = None
-        self.dcss_manager = DCSSManager(self.conf.dcss, logger=_log)
+        self.dcss_manager = DCSSManager(self.conf.dcss, remove_irc_codes=False,
+                                        logger=_log)
 
         self.discord_task = None
         self.discord_manager = DiscordManager(self.conf.discord,

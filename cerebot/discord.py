@@ -34,6 +34,16 @@ r'[a-z\u00a1-\uffff0-9]+)(?:\.(?:[a-z\u00a1-\uffff0-9]+-?)*'
 r'[a-z\u00a1-\uffff0-9]+)*(?:\.(?:[a-z\u00a1-\uffff]{2,})))'
 r'(?::\d{2,5})?(?:/[^\s]*)?)')
 
+# For parsing out IRC color codes and replacing them with ANSI color escape
+# codes in a Discord markdown code block. See the following:
+# https://modern.ircdocs.horse/formatting
+# https://gist.github.com/kkrypt0nn/a02506f3712ff2d1c8ca7c9e0aed7c06
+_irc_color_regexp = re.compile('\N{ETX}' + r'(\d{2})')
+_irc_color_map = {0 : (1, 37), 1 : (1, 30), 2 : (0, 34), 3 : (0, 32), 4 : (1, 31),
+                  5 : (0, 31), 6 : (0, 35), 7 : (0, 33), 8 : (1, 33),
+                  9 : (1, 32), 10 : (0, 36), 11 : (1, 36), 12 : (1, 34),
+                  13 : (1, 35), 14 : (0, 30), 15 : (0, 37) }
+
 _emote_regexp = re.compile(r'^<:[^>]+:([0-9]+)>$')
 _channel_regexp = re.compile(r'^<#([0-9]+)>$')
 _list_markdown_regexp = re.compile(r'^([0-9]+)\.')
@@ -262,9 +272,8 @@ class DiscordSource(ChatWatcher):
         """Escape markdown from message output, being careful not to mangle any
         URLs."""
 
-        parts = _url_regexp.split(message)
         result = ""
-        for i, p in enumerate(parts):
+        for i, p in enumerate(_url_regexp.split(message)):
             # URLs parts are at odd indices. Place angle brackes around these
             # to disable discord preview.
             if i % 2:
@@ -476,6 +485,7 @@ class DiscordSource(ChatWatcher):
 
         # Clean up any markdown we don't want.
         if message_type == 'monster':
+            # For code blocks, ``` is the only thing we need to escape.
             message = message.replace('```', r'\`\`\`')
         else:
             message = self.filter_markdown(message)
@@ -486,9 +496,26 @@ class DiscordSource(ChatWatcher):
         # Put monster output in a code block for readability of the tightly
         # spaced info.
         elif message_type == 'monster':
-            message = '```\n' + message + '\n```'
+            # Re-encode the reset formatting character to the ANSI equivalent.
+            message = message.replace('\N{SI}', '\N{ESC}[0m')
+
+            parts = _irc_color_regexp.split(message)
+            message = ""
+            for i, part in enumerate(parts):
+                if i % 2:
+                    irc_color = int(part)
+                    if irc_color in _irc_color_map:
+                        fmt, color = _irc_color_map[irc_color]
+                        part = f"\N{ESC}[{fmt};{color}m"
+                    # If we don't recognize a color code, remove it.
+                    else:
+                        part = ""
+
+                message += part
+
+            message = f"```ansi\n{message}\n```"
         elif self.message_needs_escape(message):
-            message = "]" + message
+            message = f"]{message}"
 
         await self.channel.send(message)
 
