@@ -194,15 +194,16 @@ class DiscordSource(ChatWatcher):
             return
 
         roles = []
+        default = guild.default_role
         for r in guild.roles:
             if (r.position < bot_role.position
-                # Don't want the everyone role
-                and r is not guild.default_role
-                # Don't want e.g. Twitch subscriber roles
-                and not r.managed
-                # We want only roles that have default role permissions, since
-                # these are meant for users.
-                and r.permissions == guild.default_role.permissions):
+                    # Don't want the everyone role
+                    and r is not default
+                    # Don't want e.g. Twitch subscriber roles
+                    and not r.managed
+                    # We want only roles that have default role permissions,
+                    # since these are meant for users.
+                    and r.permissions.is_subset(default.permissions)):
                 roles.append(r)
 
         # Remove any roles that are faction roles. These would end in
@@ -210,8 +211,8 @@ class DiscordSource(ChatWatcher):
         role_names = [r.name for r in roles]
         for r in guild.roles:
             if (r in roles
-                and r.name.endswith(_faction_suffix)
-                and r.name[:-len(_faction_suffix)] in role_names):
+                    and r.name.endswith(_faction_suffix)
+                    and r.name[:-len(_faction_suffix)] in role_names):
                 roles.remove(r)
 
         return roles
@@ -239,9 +240,8 @@ class DiscordSource(ChatWatcher):
         role_names = [r.name for r in roles]
         for r in guild.roles:
             if (r.position < bot_role.position
-                and r.name.endswith(_faction_suffix)
-                and r.name[:-len(_faction_suffix)] in role_names):
-
+                    and r.name.endswith(_faction_suffix)
+                    and r.name[:-len(_faction_suffix)] in role_names):
                 factions.append(r)
 
         return factions
