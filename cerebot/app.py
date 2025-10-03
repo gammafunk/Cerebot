@@ -12,7 +12,6 @@ import traceback
 
 from beem.dcss import DCSSManager
 
-from .botdb import CerebotDB
 from .config import CerebotConfig
 from .discord import DiscordManager, db_tables
 from .version import __version__
@@ -31,7 +30,6 @@ class Cerebot:
         self.shutdown_error = False
 
         self.conf = CerebotConfig(config_file)
-
         try:
             self.conf.load()
 
@@ -39,20 +37,13 @@ class Cerebot:
             self.critical_error(
                     f"App Error loading config file {self.conf.path}:")
 
-        self.bot_db = CerebotDB(self.conf.db_file, db_tables)
-        try:
-            self.bot_db.load_db()
-
-        except Exception:
-            self.critical_error(f"unable to load DB file {self.conf.db_file}:")
-
         self.dcss_task = None
         self.dcss_manager = DCSSManager(self.conf.dcss, remove_irc_codes=False,
                                         logger=_log)
 
         self.discord_task = None
         self.discord_manager = DiscordManager(self.conf.discord,
-                self.bot_db, self.dcss_manager)
+                self.conf.db_file, self.dcss_manager)
 
     def critical_error(self, error_msg):
         exc_type, exc_value, exc_tb = sys.exc_info()

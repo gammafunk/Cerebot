@@ -12,18 +12,20 @@ import sys
 import time
 import traceback
 
-from beem.chat import ChatWatcher, BotCommandException
-from beem.chat import ACCESS_BOT_ADMIN, toggle_arg
+from beem.botdb import BotDB
+from beem.chat import ChatWatcher, BotCommandException, toggle_arg, nick_regexp
+from beem.chat import bot_help_command
 
 from .version import __version__
 
 _log = logging.getLogger(__name__)
 
 class AccessLevel(enum.IntEnum):
-    NORMAL       = 0
+    BANNED       = enum.auto()
+    NORMAL       = enum.auto()
     SERVER_MOD   = enum.auto()
     SERVER_ADMIN = enum.auto()
-    BOT_ADMIN    = ACCESS_BOT_ADMIN
+    BOT_ADMIN    = enum.auto()
 
 # Used to split URLs in discord messages.
 _url_regexp = re.compile(
@@ -69,14 +71,10 @@ class DiscordSource(ChatWatcher):
     activity is seen in a new discord channel and cached based on message
     activity."""
 
-    # Users with access below this can be rate-limited.
-    ACCESS_NO_LIMIT = AccessLevel.SERVER_MOD
-
     def __init__(self, manager, channel, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.manager = manager
-        self.logger_name = __name__
         self.channel = channel
 
         # Time since any message was last seen in the channel, used for the
@@ -90,7 +88,7 @@ class DiscordSource(ChatWatcher):
     def parent_channel(self):
         """The parent Discord channel of this source. If this source is a
         thread, this gives the parent channel of the thread, otherwise it's
-        simply the ."""
+        simply the source's channel."""
 
         if isinstance(self.channel, discord.Thread):
             return self.manager.get_channel(self.channel.parent_id)
@@ -99,7 +97,11 @@ class DiscordSource(ChatWatcher):
             return self.channel
 
     @property
-    def username(self):
+    def dcss_manager(self):
+        return self.manager.dcss_manager
+
+    @property
+    def bot_user(self):
         return self.manager.user
 
     @property
@@ -110,14 +112,40 @@ class DiscordSource(ChatWatcher):
 
     @property
     def description(self):
-        name = self.channel.id
+        name = self.parent_channel.id
         if self.is_private:
-            if self.channel.recipient:
-                name = self.channel.recipient
+            if self.parent_channel.recipient:
+                name = self.channel.recipient.name
             return f'DM:{name}'
         else:
-            name = self.channel.name
-            return f'{self.channel.guild.name}:#{name}'
+            name = self.parent_channel.name
+            return f'{self.parent_channel.guild.name}:#{name}'
+
+    @property
+    def bot_commands(self):
+        return bot_commands
+
+    @property
+    def command_period(self):
+        return self.manager.conf['command_period']
+
+    @property
+    def command_limit(self):
+        return self.manager.conf['command_limit']
+
+    @property
+    def help_text(self):
+        return self.manager.conf['help_text']
+
+    def log_info(self, message, debug=False):
+        """Log an informational message."""
+
+        self.manager.log_info(f"{self.description}: {message}", debug=debug)
+
+    def log_error(self, message, trace=False):
+        """Log an error message."""
+
+        self.manager.log_error(f"{self.description}: {message}", trace=trace)
 
     def should_limit_sequell_lines(self, sender):
         """We allow unlimited response lines for a single command in private
@@ -134,8 +162,9 @@ class DiscordSource(ChatWatcher):
         if self.is_private:
             return False
 
-        return self.manager.bot_db.get_channel_data(
-                self.parent_channel.id, default=True)['allow_edits']
+        channel_data = self.manager.get_channel_data(self.parent_channel,
+                                                     default=True)
+        return channel_data['allow_edits']
 
     def get_chat_name(self, user, sanitize=False):
         return super().get_chat_name(user.name, sanitize)
@@ -144,9 +173,9 @@ class DiscordSource(ChatWatcher):
         """Return the nick we have mapped for a given user. If the user's name
         has no valid characters, use their discord id instead."""
 
-        user_data = self.manager.bot_db.get_user_data(user.id)
-        if user_data.get('dcssnick'):
-            return user_data['dcssnick']
+        user_data = self.manager.get_user_data(user)
+        if user_data['dcss_nick']:
+            return user_data['dcss_nick']
 
         name = self.get_chat_name(user, True)
         if not name:
@@ -154,26 +183,17 @@ class DiscordSource(ChatWatcher):
 
         return name
 
-    def get_chat_dcss_nicks(self, sender):
+    def get_chat_dcss_nicks(self, requester):
         """Return a set of dcss nicks for users where we have a nick
         mapping."""
 
         nicks = set()
         for user in self.chatters:
-            if not self.is_allowed_user(user):
-                continue
-
             nick = self.get_dcss_nick(user)
             if nick:
                 nicks.add(nick)
 
         return nicks
-
-    def is_allowed_user(self, user):
-        """Return true if the user is allowed to execute commands in the
-        current channel."""
-
-        return not user.bot
 
     def get_managed_roles(self):
         """Find which bot-managed roles are available on this guild for use
@@ -249,8 +269,7 @@ class DiscordSource(ChatWatcher):
     def get_source_ident(self):
         """Get a unique identifier hash of the discord channel."""
 
-        # Channels are uniquely identified by ID.
-        return {'service' : self.manager.service, 'id' : self.channel.id}
+        return {'protocol' : self.manager.service, 'id' : self.channel.id }
 
     def filter_text(self, message):
         """Censor any text according to our list of text filters, replacing
@@ -349,8 +368,8 @@ class DiscordSource(ChatWatcher):
 
     def finalize_bot_command_args(self, user, args):
         """Set the target details of a bot command given its arguments. Find
-        the guild and channel objects for the respective 'server' and 'channel'
-        arguments."""
+        the guild and channel objects for the respective 'server' and
+        'channel' arguments."""
 
         def ambiguous_search(search, desc):
             raise BotCommandException("Current channel has no server, so "
@@ -379,11 +398,11 @@ class DiscordSource(ChatWatcher):
                     match = dest_server.get_member(int(args.user))
                 else:
                     match = dest_server.get_member_named(args.user)
-                if not match:
-                    raise BotCommandException(
-                            f"Can't find a user match for '{args.user}'")
-                else:
+                if match:
                     args.user = match
+                else:
+                    raise BotCommandException(
+                        f"Can't find a user match for {args.user}")
             # The default value for 'user' is the user running the bot command.
             else:
                 args.user = user
@@ -400,8 +419,8 @@ class DiscordSource(ChatWatcher):
 
                 if (not match
                         or not isinstance(match, discord.TextChannel)):
-                    raise BotCommandException(
-                            f"Can't find a text channel match for '{args.channel}'")
+                    raise BotCommandException("Can't find a text channel match"
+                                              f" for '{args.channel}'")
                 else:
                     args.channel = match
             elif isinstance(self.parent_channel, discord.TextChannel):
@@ -437,29 +456,17 @@ class DiscordSource(ChatWatcher):
             args.faction_role = self.find_discord(self.get_faction_roles(),
                     args.faction_role)
 
-
     def user_access_level(self, user):
-        """Returns the AccessLevel of the given user considering the channel of
-        this source."""
+        return self.manager.user_access_level(user, self.parent_channel)
 
-        user_data = self.manager.bot_db.get_user_data(user.id)
-        if user_data['admin']:
-            return AccessLevel.BOT_ADMIN
+    def user_can_run_commands(self, user):
+        """Return whether the user is allowed to run bot commands."""
 
-        if not isinstance(self.parent_channel, discord.TextChannel):
-            return AccessLevel.NORMAL
+        return (not user.bot
+                and self.user_access_level(user) > AccessLevel.BANNED)
 
-        if self.channel.permissions_for(user).administrator:
-            return AccessLevel.SERVER_ADMIN
-
-        server_data = self.manager.bot_db.get_server_data(
-                self.channel.guild.id)
-        if (server_data and server_data['moderator_role']
-                and self.channel.guild.get_role(
-                    server_data['moderator_role']) in user.roles):
-            return AccessLevel.SERVER_MOD
-
-        return AccessLevel.NORMAL
+    def user_is_rate_limited(self, user):
+        return self.user_access_level(user) < AccessLevel.SERVER_MOD
 
     def check_bot_command(self, user, entry):
         """Check overall bot command restrictions for this user."""
@@ -521,7 +528,7 @@ class DiscordSource(ChatWatcher):
 
     async def read_chat(self, sender, content):
         current_time = time.time()
-        if self.is_allowed_user(sender):
+        if self.user_can_run_commands(sender):
             self.chatters[sender] = current_time
 
         self.expire_idle_chatters(current_time)
@@ -533,7 +540,9 @@ class DiscordManager(discord.Client):
     """Manages the discord client, recieving discord events and handling them
     or passing them to the appropriate channel source object."""
 
-    def __init__(self, conf, bot_db, dcss_manager, *args, **kwargs):
+    service = 'Discord'
+
+    def __init__(self, conf, db_file, dcss_manager, *args, **kwargs):
         intents = discord.Intents.default()
         intents.members = True
         intents.presences = True
@@ -541,12 +550,13 @@ class DiscordManager(discord.Client):
 
         super().__init__(*args, intents=intents, **kwargs)
 
-        self.service = 'Discord'
-        self.description = 'Discord'
-
         self.conf = conf
-        self.bot_db = bot_db
-        self.bot_commands = bot_commands
+
+        self.admins = set()
+        if self.conf.get('admins'):
+            self.admins.update(self.conf['admins'])
+
+        self.bot_db = BotDB(db_file, db_tables)
 
         self.wait_task = None
         self.stopping = False
@@ -557,32 +567,81 @@ class DiscordManager(discord.Client):
         self.dcss_manager = dcss_manager
         dcss_manager.managers[self.service] = self
 
-    def log_info(self, message, *, debug=False):
+    def log_info(self, message, debug=False):
         """Log an informational message."""
 
-        message = f"{self.description}: {message}"
+        message = f"{self.service}: {message}"
         if debug:
             _log.debug(message)
         else:
             _log.info(message)
 
-    def log_error(self, message, *, trace=False):
+    def log_error(self, message, trace=False):
         """Log an error, possibly with the traceback of an associated
         exception."""
 
-        _log.error(f"{self.description}: Error: {message}")
+        _log.error(f"{self.service}: Error: {message}")
         if trace:
             exc_type, exc_value, exc_tb = sys.exc_info()
             _log.error("".join(traceback.format_exception(
                 exc_type, exc_value, exc_tb)))
 
+    def get_server_data(self, server, default=True):
+        """Get the server's data as a dict. If no server is found and `default`
+        is `True`, return a dict of default values. Otherwise return `None`
+        when the user isn't found."""
+
+        return self.bot_db.get_row('discord_servers', { "id" : server.id },
+                                   default)
+
+    def set_server_field(self, server, field, value, create=True):
+        """Set a server data field. If the server doesn't exist and create is
+        True, create the user first, otherwise missing users generate an
+        exception."""
+
+        update = { 'id' : server.id, field : value }
+        return self.bot_db.update_row('discord_servers', update, create)
+
     def update_allowed_servers(self):
         self.allowed_servers = set()
         self.allowed_dm = {}
         for g in self.guilds:
-            server_data = self.bot_db.get_server_data(g.id)
+            server_data = self.get_server_data(g)
             if server_data and server_data['allowed']:
                 self.allowed_servers.add(g.id)
+
+    def get_channel_data(self, channel, default=True):
+        """Get the channel's data as a dict. If no channel is found and
+        `default` is `True`, return a dict of default values. Otherwise return
+        `None` when the channel isn't found."""
+
+        return self.bot_db.get_row('discord_channels', { "id" : channel.id },
+                                   default)
+
+    def set_channel_field(self, channel, field, value, create=True):
+        """Set a channel data field. If the channel doesn't exist and create is
+        True, create the channel first, otherwise missing channels generate an
+        exception."""
+
+        update = { 'id' : channel.id, field : value }
+        return self.bot_db.update_row('discord_channels', update, create)
+
+    def get_user_data(self, user, default=True):
+        """Get the user's data as a dict. If no user is found and `default` is
+        `True`, return a dict of default values. Otherwise return `None` when
+        the user isn't found."""
+
+        return self.bot_db.get_row('discord_users', { "id" : user.id },
+                                   default)
+
+    def set_user_field(self, user, field, value, create=True):
+        """Set a user data field. If the user doesn't exist and create is True,
+        create the user first, otherwise missing users generate an
+        exception."""
+
+        update = { 'id' : user.id, field : value }
+        return self.bot_db.update_row('discord_users', update, create)
+
 
     def update_text_filters(self):
         """Update the per-server list of text filter compiled regular
@@ -593,7 +652,7 @@ class DiscordManager(discord.Client):
             if g.id not in self.allowed_servers:
                 continue
 
-            server_data = self.bot_db.get_server_data(g.id)
+            server_data = self.get_server_data(g)
             if not server_data['text_filter']:
                 continue
 
@@ -623,18 +682,84 @@ class DiscordManager(discord.Client):
             if current_time - c.time_last_message >= _channel_idle_timeout:
                 self.sources.remove(c)
 
+    async def on_error(self, message, *args, **kwargs):
+        self.log_error(f"Failed to process discord event {message}",
+                       trace=True)
+
     async def on_ready(self):
         """Handle anything that needs to be done only after Discord is fully
         connected and ready."""
 
+        try:
+            self.bot_db.open_db()
+
+        except Exception as e:
+            self.log_error(f"Error opening DB file {self.bot_db.db_file}: {e}")
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        # Make sure the application owner is always a bot admin.
+        appinfo = await self.application_info()
+        if appinfo.owner:
+            self.admins.add(appinfo.owner.id)
+
         self.update_allowed_servers()
         self.update_text_filters()
 
-        appinfo = await self.application_info()
-        if (appinfo.owner
-                and not self.bot_db.get_user_data(appinfo.owner.id)['admin']):
-            self.bot_db.set_user_field(appinfo.owner.id, 'admin', True)
-            self.allowed_dm[appinfo.owner.id] = True
+    def user_access_level(self, user, channel=None):
+        """Returns the AccessLevel of the given user considering the channel
+        of this source."""
+
+        if user.id in self.admins:
+            return AccessLevel.BOT_ADMIN
+
+        user_data = self.get_user_data(user)
+        if user_data['is_banned']:
+            return AccessLevel.BANNED
+
+        if (not channel or not isinstance(channel, discord.abc.GuildChannel)):
+            return AccessLevel.NORMAL
+
+        if channel.permissions_for(user).administrator:
+            return AccessLevel.SERVER_ADMIN
+
+        mod_role = self.get_server_data(channel.guild)['moderator_role']
+        if (mod_role and channel.guild.get_role(mod_role) in user.roles):
+            return AccessLevel.SERVER_MOD
+
+        return AccessLevel.NORMAL
+
+    def get_user(self, user_id):
+        for g in self.guilds:
+            if g.id in self.allowed_servers:
+                user = g.get_member(user_id)
+                if user:
+                    return user
+
+    def dm_is_allowed(self, message):
+        """Users are allowed to DM the bot if they're a bot admin or in an
+        allowed server. This is cached for future messages."""
+
+        if message.author.id in self.allowed_dm:
+            return self.allowed_dm[message.author.id]
+
+        access_level = self.user_access_level(message.author, message.channel)
+        if access_level <= AccessLevel.BANNED:
+            self.allowed_dm[message.author.id] = False
+            return False
+
+        # Bot admins are always allowed to DM.
+        if access_level >= AccessLevel.BOT_ADMIN:
+            self.allowed_dm[message.author.id] = True
+            return True
+
+        # This will only get us back the user if they're in an allowed server.
+        user = self.get_user(message.author.id)
+        if user:
+            self.allowed_dm[user.id] = True
+            return True
+
+        self.allowed_dm[message.author.id] = False
+        return False
 
     async def on_message(self, message):
         """Handle a Discord chat message."""
@@ -642,31 +767,14 @@ class DiscordManager(discord.Client):
         if not self.is_ready():
             return
 
-        allowed = False
-        if ((isinstance(message.channel, discord.Thread)
-            or isinstance(message.channel, discord.TextChannel))
-                and message.channel.guild.id in self.allowed_servers):
-            allowed = True
-        # Users are allowed to DM the bot if they're in an allowed server.
-        # Cache this lookup for future messages.
+        if isinstance(message.channel, discord.abc.GuildChannel):
+            if not message.channel.guild.id in self.allowed_servers:
+                return
         elif isinstance(message.channel, discord.abc.PrivateChannel):
-            if message.author.id in self.allowed_dm:
-                allowed = self.allowed_dm[message.author.id]
-            else:
-                # Admins are always allowed to DM.
-                if self.bot_db.get_user_data(message.author.id)['admin']:
-                    allowed = True
-                else:
-                    for s in self.allowed_servers:
-                        s = self.get_guild(s)
-                        member = s.get_member(message.author.id)
-                        if member:
-                            allowed = True
-                            break
-
-                self.allowed_dm[message.author.id] = allowed
-
-        if not allowed:
+            if not self.dm_is_allowed(message):
+                return
+        # Some unknown type of message source.
+        else:
             return
 
         current_time = time.time()
@@ -683,6 +791,9 @@ class DiscordManager(discord.Client):
     async def on_presence_update(self, before, after):
         """Handle Discord member state changes. Currently only used to set a
         "streaming" role."""
+
+        if not after.guild or not after.guild.id in self.allowed_servers:
+            return
 
         streaming_role = None
         for r in after.guild.roles:
@@ -781,13 +892,9 @@ db_tables = {
              'type'    : int,
              'primary' : True,
             },
-            {'name'    : 'dcssnick',
+            {'name'    : 'dcss_nick',
              'type'    : str,
-             'default' : "",
-            },
-            {'name'    : 'admin',
-             'type'    : bool,
-             'default' : False,
+             'default' : None,
             },
         ],
         'discord_servers' : [
@@ -801,11 +908,11 @@ db_tables = {
             },
             {'name'    : 'moderator_role',
              'type'    : int,
-             'default' : 0,
+             'default' : None,
             },
             {'name'    : 'text_filter',
              'type'    : str,
-             'default' : "",
+             'default' : None,
             },
         ],
         'discord_channels' : [
@@ -841,9 +948,9 @@ async def bot_botstatus_command(source, requester, args):
     """!botstatus chat command"""
 
     names = []
-    for g in source.manager.guilds:
-        if g.id in source.manager.allowed_servers:
-            names.append(g.name)
+    for guild in source.manager.guilds:
+        if guild.id in source.manager.allowed_servers:
+            names.append(guild.name)
     await source.send_chat(f"Version: {__version__}; Listening to servers: "
             f"{', '.join(sorted(names))}")
 
@@ -1025,14 +1132,6 @@ async def bot_say_command(source, requester, args):
     """!say chat command"""
 
     await args.channel.send(source.filter_text(args.message))
-
-async def bot_help_command(source, requester, args):
-    """!help bot command"""
-
-    help_text = source.manager.conf['help_text']
-    help_text = help_text.replace('\n', ' ')
-    help_text = help_text.replace('%n', source.get_chat_name(source.username))
-    await source.channel.send(source.filter_text(help_text))
 
 def center_string_in_line(string, line):
     len_line = len(line)
@@ -1319,93 +1418,94 @@ async def bot_reactbomb_command(source, requester, args):
 async def bot_dcssnick_command(source, requester, args):
     """!dcssnick chat command"""
 
-    user_data = source.manager.bot_db.get_user_data(args.user.id)
+    user_data = source.manager.get_user_data(args.user)
+    if args.remove:
+        if not user_data['dcss_nick']:
+            await source.send_chat(f"User {args.user.name} already has no "
+                                   "DCSS nick.")
+            return
+
+        await source.send_chat("Removed the DCSS nick of user "
+                               f"{args.user.name}.")
+        source.manager.set_user_field(args.user, 'dcss_nick', None)
+        return
+
     if not args.nick:
-        if user_data['dcssnick']:
-            await source.send_chat(f"User {args.user.name} has dcss nick "
-                    f"{user_data['dcssnick']}")
+        if user_data['dcss_nick']:
+            await source.send_chat(f"User {args.user.name} has DCSS nick "
+                    f"{user_data['dcss_nick']}")
         else:
-            await source.send_chat(f"User {args.user.name} has no dcss nick")
+            await source.send_chat(f"User {args.user.name} has no DCSS nick")
 
         return
 
-    nick_re = re.compile(r'^[a-zA-Z0-9_-]+$')
-    if not nick_re.match(args.nick):
+    if not nick_regexp.match(args.nick):
         raise BotCommandException("DCSS nicks must contain only alphanumeric "
                 "characters and '_' or '-'")
 
-    source.manager.bot_db.set_user_field(args.user.id, 'dcssnick', args.nick)
+    source.manager.set_user_field(args.user, 'dcss_nick', args.nick)
     await source.send_chat(
             f"DCSS nick for user {args.user.name} is set to {args.nick}")
 
 async def bot_allowserver_command(source, requester, args):
     """!allowserver chat command"""
 
-    mgr = source.manager
-    mgr.bot_db.set_server_field(args.server.id, 'allowed', True)
-    mgr.update_allowed_servers()
+    source.manager.set_server_field(args.server, 'allowed', True)
+    source.manager.update_allowed_servers()
     await source.send_chat(f"Server {args.server.name} has been allowed.")
 
 async def bot_disallowserver_command(source, requester, args):
     """!disallowserver chat command"""
 
-    mgr = source.manager
-    mgr.bot_db.set_server_field(args.server.id, 'allowed', False)
-    mgr.update_allowed_servers()
+    source.manager.set_server_field(args.server, 'allowed', False)
+    source.manager.update_allowed_servers()
     await source.send_chat(f"Server {args.server.name} has been disallowed.")
 
 async def bot_setmodrole_command(source, requester, args):
     """!setmodrole chat command"""
 
-    mgr = source.manager
-    mgr.bot_db.set_server_field(args.server.id, 'moderator_role', args.role.id)
+    source.manager.set_server_field(args.server, 'moderator_role', args.role.id)
     await source.send_chat(f"Moderator role for server {args.server.name} has "
             f"been set to role {args.role.name}.")
 
 async def bot_removemodrole_command(source, requester, args):
     """!removemodrole chat command"""
 
-    mgr = source.manager
-    server_data = mgr.bot_db.get_server_data(args.server.id, True)
-    mgr.bot_db.set_server_field(args.server.id, 'moderator_role', 0)
+    source.manager.set_server_field(args.server, 'moderator_role', 0)
     await source.send_chat(f"Moderator role for server {args.server.name} has "
             "been removed.")
 
 async def bot_textfilter_command(source, requester, args):
     """!textfilter chat command"""
 
-    mgr = source.manager
-    server_data = mgr.bot_db.get_server_data(args.server.id)
+    server_data = source.manager.get_server_data(args.server)
     if not args.filter:
         if server_data['text_filter']:
-            if source.is_private:
-                terms = server_data['text_filter']
-            else:
+            terms = server_data['text_filter']
+            if not source.is_private:
                 terms = ','.join([t[0] + "*" * len(t[1:])
-                    for t in server_data['text_filter'].split(',')])
-            await source.send_chat(f"Server {args.server.name} has text filter "
-                    f"{terms}")
+                                  for t in terms.split(',')])
+            await source.send_chat(f"Server {args.server.name} has text "
+                                   f"filter {terms}")
         else:
             await source.send_chat(f"Server {args.server.name} has no text "
                     "filter")
 
         return
 
-    terms = [t.strip().lower() for t in args.filter.split(',')]
-    mgr.bot_db.set_server_field(args.server.id, 'text_filter', ','.join(terms))
-    mgr.update_text_filters()
-    if source.is_private:
-        terms = server_data['text_filter']
-    else:
-        terms = ','.join([t[0] + "*" * len(t[1:])
-            for t in server_data['text_filter'].split(',')])
+    source.manager.set_server_field(args.server, 'text_filter', args.filter)
+    source.manager.update_text_filters()
+
+    terms = args.filter
+    if not source.is_private:
+        terms = ','.join([t[0] + "*" * len(t[1:]) for t in terms.split(',')])
     await source.send_chat(
             f"Text filter for server {args.server.name} is set to {terms}")
 
 async def bot_removetextfilter_command(source, requester, args):
     """!removetextfilter chat command"""
 
-    source.manager.bot_db.set_server_field(args.server.id, 'text_filter', '')
+    source.manager.set_server_field(args.server, 'text_filter', '')
     source.manager.update_text_filters()
     await source.send_chat(f"Text filter for server {args.server.name} has "
             "been removed.")
@@ -1413,16 +1513,14 @@ async def bot_removetextfilter_command(source, requester, args):
 async def bot_allowedits_command(source, requester, args):
     """!allowedits chat command"""
 
-    mgr = source.manager
-    mgr.bot_db.set_channel_field(args.channel.id, 'allow_edits', True)
+    source.manager.set_channel_field(args.channel, 'allow_edits', True)
     await source.send_chat(
             f"Channel <#{args.channel.id}> now allows Sequell edits.")
 
 async def bot_disallowedits_command(source, requester, args):
     """!disallowedits chat command"""
 
-    mgr = source.manager
-    mgr.bot_db.set_channel_field(args.channel.id, 'allow_edits', False)
+    source.manager.set_channel_field(args.channel, 'allow_edits', False)
     await source.send_chat(
             f"Channel <#{args.channel.id}> no longer allows Sequell edits.")
 
@@ -1432,6 +1530,7 @@ async def bot_disallowedits_command(source, requester, args):
 # admin.
 user_option = {
         'name'         : '-u',
+        'metavar'      : 'USERNAME',
         'dest'         : 'user',
         'type'         : str,
         'default'      : None,
@@ -1500,44 +1599,52 @@ bot_commands = {
     },
     'debugmode' : {
         'access_level' : AccessLevel.BOT_ADMIN,
+        'logged'       : True,
         'function'     : bot_debugmode_command,
         'args'         : [ toggle_arg ],
-        'logged'       : True,
     },
     'allowserver' : {
         'access_level' : AccessLevel.BOT_ADMIN,
+        'logged'       : True,
         'function'     : bot_allowserver_command,
         'args'         : [ server_arg ],
     },
     'disallowserver' : {
         'access_level' : AccessLevel.BOT_ADMIN,
+        'logged'       : True,
         'function'     : bot_disallowserver_command,
         'args'         : [ server_arg ],
     },
     'allowedits' : {
         'access_level' : AccessLevel.BOT_ADMIN,
+        'require_guild': True,
+        'logged'       : True,
         'function'     : bot_allowedits_command,
         'args'         : [ server_option, channel_option_arg ],
     },
     'disallowedits' : {
         'access_level' : AccessLevel.BOT_ADMIN,
+        'require_guild': True,
+        'logged'       : True,
         'function'     : bot_disallowedits_command,
         'args'         : [ server_option, channel_option_arg ],
     },
 
     # Server admin commands.
     'setmodrole' : {
-        'require_guild' : True,
-        'access_level'  : AccessLevel.SERVER_ADMIN,
         'function'      : bot_setmodrole_command,
+        'access_level'  : AccessLevel.SERVER_ADMIN,
+        'require_guild' : True,
         'args'          : [ server_option, role_arg ],
     },
     'removemodrole' : {
-        'require_guild' : True,
         'access_level'  : AccessLevel.SERVER_ADMIN,
+        'require_guild' : True,
         'function'      : bot_removemodrole_command,
         'args'          : [ server_option ],
     },
+
+    # Server mod commands.
     'textfilter' : {
         'access_level'  : AccessLevel.SERVER_MOD,
         'function'      : bot_textfilter_command,
@@ -1597,6 +1704,7 @@ bot_commands = {
         'function' : bot_dcssnick_command,
         'args'     : [
             user_option,
+            { 'name' : '-r', 'dest': 'remove', 'action' : 'store_true' },
             { 'name' : 'nick', 'type' : str, 'nargs' : '?', 'default' : None },
             ],
     },
