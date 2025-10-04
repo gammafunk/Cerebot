@@ -892,6 +892,10 @@ db_tables = {
              'type'    : int,
              'primary' : True,
             },
+            {'name'    : 'is_banned',
+             'type'    : bool,
+             'default' : False,
+            },
             {'name'    : 'dcss_nick',
              'type'    : str,
              'default' : None,
@@ -1524,6 +1528,36 @@ async def bot_disallowedits_command(source, requester, args):
     await source.send_chat(
             f"Channel <#{args.channel.id}> no longer allows Sequell edits.")
 
+async def bot_ban_command(source, requester, args):
+    """!ban chat command"""
+
+    if requester == args.user:
+        await source.send_chat("You can't ban yourself!")
+        return
+
+    user_level = source.user_access_level(args.user)
+    if user_level >= AccessLevel.BOT_ADMIN:
+        await source.send_chat(f"User {args.user} is a bot admin and can't "
+                               "be banned.")
+        return
+
+    if user_level <= AccessLevel.BANNED:
+        await source.send_chat(f"User {args.user} is already banned.")
+        return
+
+    source.manager.set_user_field(args.user, 'is_banned', True)
+    await source.send_chat(f"User {args.user} is now banned.")
+
+async def bot_unban_command(source, requester, args):
+    """!unban chat command"""
+
+    if source.user_access_level(args.user) > AccessLevel.BANNED:
+        await source.send_chat(f"User {args.user} is already not banned.")
+        return
+
+    source.manager.set_user_field(args.user, 'is_banned', False)
+    await source.send_chat(f"User {args.user} is now unbanned.")
+
 # Some common arguments.
 
 # Designate an optional target user for an across-server command. Requires bot
@@ -1537,7 +1571,16 @@ user_option = {
         'access_level' : AccessLevel.BOT_ADMIN,
         }
 
-# Like the above, but for server-level user commands mods can run.
+# Like user_option, but required.
+user_arg = {
+        'name'         : 'user',
+        'metavar'      : 'USERNAME',
+        'type'         : str,
+        'aggregate'    : True,
+        'access_level' : AccessLevel.BOT_ADMIN,
+        }
+
+# A user option for commands server mods can run.
 server_user_option = user_option.copy()
 server_user_option['access_level'] = AccessLevel.SERVER_MOD
 
@@ -1628,6 +1671,18 @@ bot_commands = {
         'logged'       : True,
         'function'     : bot_disallowedits_command,
         'args'         : [ server_option, channel_option_arg ],
+    },
+    'ban' : {
+        'access_level' : AccessLevel.BOT_ADMIN,
+        'logged'       : True,
+        'function'     : bot_ban_command,
+        'args'         : [ user_arg ],
+    },
+    'unban' : {
+        'access_level' : AccessLevel.BOT_ADMIN,
+        'logged'       : True,
+        'function'     : bot_unban_command,
+        'args'         : [ user_arg ],
     },
 
     # Server admin commands.
