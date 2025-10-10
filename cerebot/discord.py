@@ -175,13 +175,20 @@ class DiscordSource(ChatWatcher):
 
         user_data = self.manager.get_user_data(user)
         if user_data['dcss_nick']:
-            return user_data['dcss_nick']
+            nick = user_data['dcss_nick']
+        else:
+            nick = self.get_chat_name(user, True)
 
-        name = self.get_chat_name(user, True)
-        if not name:
-            name = str(user.id)
+        # Users can't use the nick of an irc nick unless they're the
+        # corresponding discord user for that nick.
+        if (nick in self.manager.irc_nicks
+                and self.manager.irc_nicks[nick] != user.id):
+            nick = None
 
-        return name
+        if not nick:
+            nick = str(user.id)
+
+        return nick
 
     def get_chat_dcss_nicks(self, requester):
         """Return a set of dcss nicks for users where we have a nick
@@ -642,6 +649,32 @@ class DiscordManager(discord.Client):
         update = { 'id' : user.id, field : value }
         return self.bot_db.update_row('discord_users', update, create)
 
+    def register_irc_nick(self, nick, user):
+        """Register an IRC nick. A registered nick with a corresponding discord
+        ID can't be used by anyone other than this user for Sequell commands. A
+        nick registered with a user of None can't be used by anyone at all. A
+        user that tries to use a registered nick they're not authorized for
+        will have their Sequell nick be their discord ID."""
+
+        if user:
+            discord_id = user.id
+        else:
+            discord_id = None
+        update = { 'nick' : nick, 'discord_id' : discord_id }
+        self.bot_db.update_row('irc_nicks', update, True)
+        self.update_irc_nicks()
+
+    def remove_irc_nick(self, nick):
+        """Remove the registration of an IRC nick."""
+
+        self.bot_db.remove_row('irc_nicks', { 'nick' : nick })
+        self.update_irc_nicks()
+
+    def update_irc_nicks(self):
+        self.irc_nicks = {}
+        rows = self.bot_db.get_rows("irc_nicks")
+        for row in rows:
+            self.irc_nicks[row['nick']] = row['discord_id']
 
     def update_text_filters(self):
         """Update the per-server list of text filter compiled regular
@@ -704,6 +737,7 @@ class DiscordManager(discord.Client):
 
         self.update_allowed_servers()
         self.update_text_filters()
+        self.update_irc_nicks()
 
     def user_access_level(self, user, channel=None):
         """Returns the AccessLevel of the given user considering the channel
@@ -927,6 +961,17 @@ db_tables = {
             {'name'    : 'allow_edits',
              'type'    : bool,
              'default' : False,
+            },
+        ],
+        'irc_nicks' : [
+            {'name'    : 'nick',
+             'type'    : str,
+             'primary' : True,
+            },
+            {'name'    : 'discord_id',
+             'type'    : int,
+             'unique'  : True,
+             'default' : None,
             },
         ],
 }
@@ -1558,6 +1603,88 @@ async def bot_unban_command(source, requester, args):
     source.manager.set_user_field(args.user, 'is_banned', False)
     await source.send_chat(f"User {args.user} is now unbanned.")
 
+async def bot_ircnick_command(source, requester, args):
+    """!ircnick chat command"""
+
+    id_nicks = {}
+    for nick, discord_id in source.manager.irc_nicks.items():
+        id_nicks[discord_id] = nick
+
+    if args.remove:
+        if not args.nick:
+            raise BotCommandException("No IRC nick provided to remove")
+
+        if args.nick not in source.manager.irc_nicks:
+            await source.send_chat(f"IRC nick is already unregistered.")
+            return
+
+        source.manager.remove_irc_nick(args.nick)
+        await source.send_chat(f"Removed IRC nick {nick}.")
+        return
+
+    if args.reserve:
+        if not args.nick:
+            raise BotCommandException("No IRC nick provided to reserve")
+
+        if not nick_regexp.match(args.nick):
+            raise BotCommandException("IRC nicks must contain only"
+                " alphanumeric characters and '_' or '-'")
+
+        if args.nick in source.manager.irc_nicks:
+            user_id = source.manager.irc_nicks[args.nick]
+            if user_id:
+                user = source.manager.get_user(user_id)
+                if user:
+                    name = f"user {user.name}"
+                else:
+                    name = f"user ID {user_id}"
+                await source.send_chat(f"Can't reserve IRC nick {args.nick}:"
+                                       f" already registered to {name}")
+            else:
+                await source.send_chat(f"IRC nick {args.nick} is already"
+                                       " reserved.")
+            return
+
+        source.manager.register_irc_nick(args.nick, None)
+        await source.send_chat(f"IRC nick {args.nick} is now reserved.")
+        return
+
+    if not args.nick:
+        if args.user.id in id_nicks:
+            await source.send_chat(f"User {args.user.name} has IRC nick "
+                                   f"{id_nicks[args.user.id]}")
+        else:
+            await source.send_chat(f"User {args.user.name} has no IRC nick")
+        return
+
+    if not nick_regexp.match(args.nick):
+        raise BotCommandException("IRC nicks must contain only"
+            " alphanumeric characters and '_' or '-'")
+
+    reg_id = source.manager.irc_nicks.get(args.nick)
+    # If the id for this nick is not None, we require the caller to remove
+    # the existing registration first.
+    if reg_id:
+        if reg_id == args.user.id:
+            await source.send_chat(f"IRC nick {args.nick} is already"
+                                   f" registered to user {args.user.name}")
+            return
+
+        reg_user = source.manager.get_user(reg_id)
+        if reg_user:
+            name = f"user {reg_user.name}"
+        else:
+            name = f"user ID {reg_id}"
+        await source.send_chat(f"IRC nick {args.nick} is already registered to"
+                               f" {name}. Remove this registration with -r"
+                               " first.")
+        return
+
+    source.manager.register_irc_nick(args.nick, args.user)
+    await source.send_chat(f"IRC nick for user {args.user.name} is now"
+                           f" {args.nick}")
+
+
 # Some common arguments.
 
 # Designate an optional target user for an across-server command. Requires bot
@@ -1683,6 +1810,15 @@ bot_commands = {
         'logged'       : True,
         'function'     : bot_unban_command,
         'args'         : [ user_arg ],
+    },
+    'ircnick'     : {
+        'function' : bot_ircnick_command,
+        'args'     : [
+            user_option,
+            { 'name' : '-r', 'dest': 'remove', 'action' : 'store_true' },
+            { 'name' : '-R', 'dest': 'reserve', 'action' : 'store_true' },
+            { 'name' : 'nick', 'type' : str, 'nargs' : '?', 'default' : None },
+            ],
     },
 
     # Server admin commands.
