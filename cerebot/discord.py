@@ -14,7 +14,6 @@ import traceback
 
 from beem.botdb import BotDB
 from beem.chat import ChatWatcher, BotCommandException, toggle_arg, nick_regexp
-from beem.chat import bot_help_command
 
 from .version import __version__
 
@@ -977,6 +976,15 @@ db_tables = {
 }
 
 # Bot command functions
+async def bot_help_command(source, user, args):
+    """!help bot command"""
+
+    help_text = source.help_text
+    help_text = help_text.replace('\n', ' ')
+    help_text = help_text.replace('%n', source.get_chat_name(source.bot_user))
+    # Avoid the markdown filter.
+    await source.channel.send(source.filter_text(help_text))
+
 async def bot_listcommands_command(source, requester, args):
     """!listcommands chat command"""
 
