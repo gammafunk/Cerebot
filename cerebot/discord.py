@@ -400,10 +400,7 @@ class DiscordSource(ChatWatcher):
 
         if 'user' in vargs:
             if args.user:
-                if args.user.isdigit():
-                    match = dest_server.get_member(int(args.user))
-                else:
-                    match = dest_server.get_member_named(args.user)
+                match = self.manager.get_user(args.user, dest_server)
                 if match:
                     args.user = match
                 else:
@@ -761,10 +758,25 @@ class DiscordManager(discord.Client):
 
         return AccessLevel.NORMAL
 
-    def get_user(self, user_id):
-        for g in self.guilds:
+    def get_user(self, user_search, server=None):
+        user_id = None
+        if isinstance(user_search, int):
+            user_id = user_search
+        elif (isinstance(user_search, str)
+              and user_search.isdigit()
+              and 18 <= len(user_search) <= 20):
+            user_id = int(user_search)
+
+        if server:
+            guilds = [server]
+        else:
+            guilds = self.guilds
+        for g in guilds:
             if g.id in self.allowed_servers:
-                user = g.get_member(user_id)
+                if user_id:
+                    user = g.get_member(user_id)
+                else:
+                    user = g.get_member_named(user_search)
                 if user:
                     return user
 
