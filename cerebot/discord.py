@@ -372,7 +372,7 @@ class DiscordSource(ChatWatcher):
             else:
                 return None
 
-    def finalize_bot_command_args(self, user, args):
+    async def finalize_bot_command_args(self, user, args):
         """Set the target details of a bot command given its arguments. Find
         the guild and channel objects for the respective 'server' and
         'channel' arguments."""
@@ -400,7 +400,7 @@ class DiscordSource(ChatWatcher):
 
         if 'user' in vargs:
             if args.user:
-                match = self.manager.get_user(args.user, dest_server)
+                match = await self.manager.get_user(args.user, dest_server)
                 if match:
                     args.user = match
                 else:
@@ -547,8 +547,6 @@ class DiscordManager(discord.Client):
 
     def __init__(self, conf, db_file, dcss_manager, *args, **kwargs):
         intents = discord.Intents.default()
-        intents.members = True
-        intents.presences = True
         intents.message_content = True
 
         super().__init__(*args, intents=intents, **kwargs)
@@ -758,7 +756,7 @@ class DiscordManager(discord.Client):
 
         return AccessLevel.NORMAL
 
-    def get_user(self, user_search, server=None):
+    async def get_user(self, user_search, server=None):
         user_id = None
         if isinstance(user_search, int):
             user_id = user_search
@@ -774,9 +772,11 @@ class DiscordManager(discord.Client):
         for g in guilds:
             if g.id in self.allowed_servers:
                 if user_id:
-                    user = g.get_member(user_id)
+                    user = await g.fetch_member(user_id)
                 else:
-                    user = g.get_member_named(user_search)
+                    user = g.query_members(user_search)
+                    if user:
+                        user = user[1]
                 if user:
                     return user
 
@@ -832,37 +832,6 @@ class DiscordManager(discord.Client):
 
         source.time_last_message = current_time
         await source.read_chat(message.author, message.content)
-
-    async def on_presence_update(self, before, after):
-        """Handle Discord member state changes. Currently only used to set a
-        "streaming" role."""
-
-        if not after.guild or not after.guild.id in self.allowed_servers:
-            return
-
-        streaming_role = None
-        for r in after.guild.roles:
-            if r.name.lower() == "streaming":
-                streaming_role = r
-                break
-
-        if not streaming_role:
-            return
-
-        streaming = False
-        for a in after.activities:
-            if isinstance(a, discord.Streaming):
-                streaming = True
-                break
-
-        if streaming and streaming_role not in after.roles:
-            await after.add_roles(streaming_role)
-            self.log_info(f"Gave user {after} on server {after.guild} "
-                    "streaming role")
-        elif not streaming and streaming_role in after.roles:
-            await after.remove_roles(streaming_role)
-            self.log_info(f"Removed streaming role for user {after} on server "
-                    f"{after.guild}")
 
     def get_source_by_ident(self, source_ident):
         """Given an 'identity' key tuple identifying a source, return the
@@ -1653,7 +1622,7 @@ async def bot_ircnick_command(source, requester, args):
         if args.nick in source.manager.irc_nicks:
             user_id = source.manager.irc_nicks[args.nick]
             if user_id:
-                user = source.manager.get_user(user_id)
+                user = await source.manager.get_user(user_id)
                 if user:
                     name = f"user {user.name}"
                 else:
@@ -1690,7 +1659,7 @@ async def bot_ircnick_command(source, requester, args):
                                    f" registered to user {args.user.name}")
             return
 
-        reg_user = source.manager.get_user(reg_id)
+        reg_user = await source.manager.get_user(reg_id)
         if reg_user:
             name = f"user {reg_user.name}"
         else:
