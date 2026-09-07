@@ -26,7 +26,9 @@ class Cerebot:
     Discord managers."""
 
     def __init__(self, config_file):
-        self.loop = asyncio.get_event_loop()
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
         self.shutdown_error = False
 
         self.conf = CerebotConfig(config_file)
