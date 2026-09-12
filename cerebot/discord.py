@@ -770,17 +770,25 @@ class DiscordManager(discord.Client):
         else:
             guilds = self.guilds
         for g in guilds:
-            if g.id in self.allowed_servers:
-                if user_id:
+            if g.id not in self.allowed_servers:
+                continue
+
+            if user_id:
+                try:
                     user = await g.fetch_member(user_id)
+                except discord.NotFound:
+                    return
                 else:
-                    user = g.query_members(user_search)
-                    if user:
-                        user = user[1]
-                if user:
                     return user
 
-    def dm_is_allowed(self, message):
+            users = await g.query_members(user_search)
+            for u in users:
+                # query_members() uses a prefix search, and we want an
+                # exact match.
+                if u.display_name == user_search:
+                    return u
+
+    async def dm_is_allowed(self, message):
         """Users are allowed to DM the bot if they're a bot admin or in an
         allowed server. This is cached for future messages."""
 
@@ -798,7 +806,7 @@ class DiscordManager(discord.Client):
             return True
 
         # This will only get us back the user if they're in an allowed server.
-        user = self.get_user(message.author.id)
+        user = await self.get_user(message.author.id)
         if user:
             self.allowed_dm[user.id] = True
             return True
@@ -816,7 +824,7 @@ class DiscordManager(discord.Client):
             if not message.channel.guild.id in self.allowed_servers:
                 return
         elif isinstance(message.channel, discord.abc.PrivateChannel):
-            if not self.dm_is_allowed(message):
+            if not await self.dm_is_allowed(message):
                 return
         # Some unknown type of message source.
         else:
