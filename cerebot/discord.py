@@ -777,16 +777,16 @@ class DiscordManager(discord.Client):
                 try:
                     user = await g.fetch_member(user_id)
                 except discord.NotFound:
-                    return
+                    continue
                 else:
                     return user
-
-            users = await g.query_members(user_search)
-            for u in users:
-                # query_members() uses a prefix search, and we want an
-                # exact match.
-                if u.display_name == user_search:
-                    return u
+            else:
+                users = await g.query_members(user_search)
+                for u in users:
+                    # query_members() uses a prefix search, and we want an
+                    # exact match.
+                    if u.display_name == user_search:
+                        return u
 
     async def dm_is_allowed(self, message):
         """Users are allowed to DM the bot if they're a bot admin or in an
