@@ -862,12 +862,7 @@ class DiscordManager(discord.Client):
             if need_wait:
                 self.wait_task = asyncio.ensure_future(
                         asyncio.sleep(_reconnect_timeout))
-
-                try:
-                    await self.wait_task
-
-                except asyncio.CancelledError:
-                    raise
+                await self.wait_task
 
             self.log_info("Starting Discord connection.")
 
