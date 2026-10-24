@@ -536,6 +536,7 @@ class DiscordSource(ChatWatcher):
 
         self.expire_idle_chatters(current_time)
 
+        content = self.manager.bot_mention_regexp.sub("", content)
         await super().read_chat(sender, content)
 
 
@@ -547,8 +548,6 @@ class DiscordManager(discord.Client):
 
     def __init__(self, conf, db_file, dcss_manager, *args, **kwargs):
         intents = discord.Intents.default()
-        intents.message_content = True
-
         super().__init__(*args, intents=intents, **kwargs)
 
         self.conf = conf
@@ -597,7 +596,7 @@ class DiscordManager(discord.Client):
 
     def set_server_field(self, server, field, value, create=True):
         """Set a server data field. If the server doesn't exist and create is
-        True, create the user first, otherwise missing users generate an
+        True, create the user first, otherwise a missing server generates an
         exception."""
 
         update = { 'id' : server.id, field : value }
@@ -637,7 +636,7 @@ class DiscordManager(discord.Client):
 
     def set_user_field(self, user, field, value, create=True):
         """Set a user data field. If the user doesn't exist and create is True,
-        create the user first, otherwise missing users generate an
+        create the user first, otherwise a missing user generates an
         exception."""
 
         update = { 'id' : user.id, field : value }
@@ -733,6 +732,8 @@ class DiscordManager(discord.Client):
         self.update_text_filters()
         self.update_irc_nicks()
 
+        self.bot_mention_regexp = re.compile(rf'\s*@{self.user.name}\s*')
+
     def user_access_level(self, user, channel=None):
         """Returns the AccessLevel of the given user considering the channel
         of this source."""
@@ -821,7 +822,9 @@ class DiscordManager(discord.Client):
             return
 
         if isinstance(message.channel, discord.abc.GuildChannel):
-            if not message.channel.guild.id in self.allowed_servers:
+            if not (message.channel.guild.id in self.allowed_servers
+                    # The bot only responds to mentions in public channels.
+                    and self.user.mentioned_in(message)):
                 return
         elif isinstance(message.channel, discord.abc.PrivateChannel):
             if not await self.dm_is_allowed(message):
@@ -839,7 +842,7 @@ class DiscordManager(discord.Client):
             self.sources.add(source)
 
         source.time_last_message = current_time
-        await source.read_chat(message.author, message.content)
+        await source.read_chat(message.author, message.clean_content)
 
     def get_source_by_ident(self, source_ident):
         """Given an 'identity' key tuple identifying a source, return the
